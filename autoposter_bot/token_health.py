@@ -109,15 +109,12 @@ def build_instagram_token_warning_message(settings: Settings, warning_hours: int
 
 
 def build_vk_oauth_link(settings: Settings) -> str | None:
-    client_id = settings.vk_client_id or "6287487"
-    redirect_uri = settings.vk_redirect_uri or "https://oauth.vk.com/blank.html"
-    scope = settings.vk_scope or "wall,photos,groups,offline"
     return (
         "https://oauth.vk.com/authorize"
-        f"?client_id={client_id}"
+        "?client_id=6287487"
         "&display=page"
-        f"&redirect_uri={redirect_uri}"
-        f"&scope={scope}"
+        "&redirect_uri=https://oauth.vk.com/blank.html"
+        "&scope=wall,photos,groups,offline"
         "&response_type=token"
         "&v=5.199"
     )

@@ -31,7 +31,7 @@ Default seeded plans:
 
 Pricing model now targeted in bot:
 
-- `1000 ₽` / `2500 ₽` / `5000 ₽` / `7500 ₽`
+- `500 ₽` / `1250 ₽` / `2500 ₽` / `3750 ₽`
 - account limit per social: `1 / 2 / 4 / 8`
 - post limit per month: `4 / 8 / 15 / 25`
 - extra account: `350 ₽`

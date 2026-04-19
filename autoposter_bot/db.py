@@ -197,7 +197,7 @@ class Database:
             (
                 "start",
                 "Start",
-                1000,
+                500,
                 0,
                 4,
                 {
@@ -210,7 +210,7 @@ class Database:
             (
                 "growth",
                 "Growth",
-                2500,
+                1250,
                 0,
                 8,
                 {
@@ -223,7 +223,7 @@ class Database:
             (
                 "business",
                 "Business",
-                5000,
+                2500,
                 0,
                 15,
                 {
@@ -236,7 +236,7 @@ class Database:
             (
                 "scale",
                 "Scale",
-                7500,
+                3750,
                 0,
                 25,
                 {

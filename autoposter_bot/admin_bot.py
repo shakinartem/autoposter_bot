@@ -1107,6 +1107,10 @@ class TelegramAdminBot:
             raise ValueError("Пользователь не инициализирован. Откройте /start ещё раз.")
         return owner_user_id
 
+    def _is_admin_user(self, user_id: int) -> bool:
+        user = self.db.get_user(user_id)
+        return bool(user and user["role"] == "admin")
+
     def _bootstrap_new_user(self, user_id: int) -> None:
         subscription = self.db.get_active_subscription(user_id)
         if subscription is not None:
@@ -1289,7 +1293,7 @@ class TelegramAdminBot:
             "💳 Биллинг",
             f"Текущий тариф: {plan_name}",
             f"Подписка до: {expires_at}",
-            f"Баланс кредитов: {user['credit_balance']}",
+            f"Баланс кредитов: {'∞ (admin)' if self._is_admin_user(user_id) else user['credit_balance']}",
             "",
             "Последние операции:",
         ]
@@ -1413,6 +1417,8 @@ class TelegramAdminBot:
         return lines
 
     def _enforce_account_creation_pricing(self, user_id: int, platform: str) -> None:
+        if self._is_admin_user(user_id):
+            return
         user = self.db.get_user(user_id)
         if not user:
             raise ValueError("Пользователь не найден.")
@@ -1442,6 +1448,8 @@ class TelegramAdminBot:
         )
 
     def _charge_for_post_if_needed(self, user_id: int) -> str | None:
+        if self._is_admin_user(user_id):
+            return None
         user = self.db.get_user(user_id)
         if not user:
             raise ValueError("Пользователь не найден.")
@@ -1497,6 +1505,8 @@ class TelegramAdminBot:
         )
 
     def _purchase_extra_post(self, user_id: int) -> str:
+        if self._is_admin_user(user_id):
+            return "👑 Для admin покупка доп. постов не нужна: лимиты и списания отключены."
         user = self.db.get_user(user_id)
         features, plan = self._plan_features(user_id)
         price = int(features.get("extra_post_price_rub", 35))
@@ -1519,6 +1529,8 @@ class TelegramAdminBot:
         return f"✅ Куплен +1 доп. пост за {price} кредитов. Остаток: {updated_user['credit_balance']}."
 
     def _purchase_extra_account(self, user_id: int, platform: str) -> str:
+        if self._is_admin_user(user_id):
+            return f"👑 Для admin покупка доп. аккаунтов не нужна: можно подключать аккаунты {self._platform_label(platform)} без ограничений."
         user = self.db.get_user(user_id)
         features, plan = self._plan_features(user_id)
         price = int(features.get("extra_account_price_rub", 350))
