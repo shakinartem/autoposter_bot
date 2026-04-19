@@ -1,0 +1,21 @@
+[project]
+name = "autoposter-bot"
+version = "0.1.0"
+description = "Autoposter bot for Telegram, VK, Instagram, and TikTok"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "requests>=2.32.0",
+  "python-dotenv>=1.0.1",
+  "cloudinary>=1.44.1",
+]
+
+[project.scripts]
+autoposter = "autoposter_bot.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["autoposter_bot*"]

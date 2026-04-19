@@ -1,0 +1,30 @@
+{
+  "post_id": "launch-001",
+  "content_type": "crosspost",
+  "text": "Привет! Это тестовый автопост из нашего нового бота.",
+  "scheduled_at": "2026-04-15T18:30:00",
+  "media_items": [
+    {
+      "source": "C:/path/to/cover.jpg",
+      "media_type": "image",
+      "order_index": 0
+    },
+    {
+      "source": "C:/path/to/clip.mp4",
+      "media_type": "video",
+      "order_index": 1
+    }
+  ],
+  "targets": [
+    {
+      "platform": "telegram",
+      "destination": "@my_channel",
+      "account_name": "Main TG Channel"
+    },
+    {
+      "platform": "vk",
+      "destination": "-123456789",
+      "account_name": "Main VK Group"
+    }
+  ]
+}
