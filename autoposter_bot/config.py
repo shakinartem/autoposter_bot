@@ -19,6 +19,7 @@ except ModuleNotFoundError:
 class Settings:
     env_file_path: Path
     telegram_bot_token: str | None
+    telegram_bot_username: str | None
     telegram_default_destination: str | None
     telegram_admin_user_ids: list[int]
     vk_token: str | None
@@ -80,6 +81,7 @@ def load_settings(env_file: str | None = None) -> Settings:
     return Settings(
         env_file_path=env_file_path,
         telegram_bot_token=get_value("TELEGRAM_BOT_TOKEN"),
+        telegram_bot_username=get_value("TELEGRAM_BOT_USERNAME"),
         telegram_default_destination=get_value("TELEGRAM_DEFAULT_DESTINATION"),
         telegram_admin_user_ids=admin_ids,
         vk_token=get_value("VK_TOKEN"),
