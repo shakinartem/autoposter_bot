@@ -3302,6 +3302,23 @@ class TelegramAdminBot:
     def _is_yookassa_enabled(self) -> bool:
         return bool(self.settings.yookassa_shop_id and self.settings.yookassa_secret_key)
 
+    def _build_yookassa_payment_order(self, user_id: int, amount_rub: int, description: str) -> dict[str, Any] | None:
+        service_id = (self.settings.yookassa_payment_order_service_id or "").strip()
+        if not service_id:
+            return None
+        payment_purpose_prefix = (self.settings.yookassa_payment_order_purpose_prefix or "").strip()
+        payment_purpose = f"{payment_purpose_prefix}; {description}".strip("; ").strip()
+        return {
+            "type": self.settings.yookassa_payment_order_type or "utilities",
+            "amount": {
+                "value": f"{amount_rub:.2f}",
+                "currency": self.settings.yookassa_currency,
+            },
+            "payment_purpose": payment_purpose[:210],
+            "service_id": service_id,
+            "payment_document_id": f"autoposter-{user_id}-{uuid4().hex[:12]}",
+        }
+
     def _create_yookassa_payment(
         self,
         *,
@@ -3333,6 +3350,13 @@ class TelegramAdminBot:
                 **(metadata or {}),
             },
         }
+        payment_order = self._build_yookassa_payment_order(user_id, amount_rub, description)
+        if payment_order is not None:
+            payload["payment_order"] = payment_order
+        elif self.settings.yookassa_payment_order_service_id is not None:
+            raise ValueError(
+                "Для этого магазина включён режим payment_order, но YOOKASSA_PAYMENT_ORDER_SERVICE_ID не задан."
+            )
         headers = {
             "Idempotence-Key": idempotence_key,
             "Content-Type": "application/json",

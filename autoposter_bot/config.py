@@ -63,6 +63,9 @@ class Settings:
     yookassa_webhook_url: str | None
     yookassa_currency: str
     yookassa_test_mode: bool
+    yookassa_payment_order_service_id: str | None
+    yookassa_payment_order_type: str
+    yookassa_payment_order_purpose_prefix: str
     database_path: Path
     queue_dir: Path
 
@@ -134,6 +137,13 @@ def load_settings(env_file: str | None = None) -> Settings:
         yookassa_webhook_url=get_value("YOOKASSA_WEBHOOK_URL"),
         yookassa_currency=get_value("YOOKASSA_CURRENCY", "RUB") or "RUB",
         yookassa_test_mode=_parse_bool(get_value("YOOKASSA_TEST_MODE", "false") or "false"),
+        yookassa_payment_order_service_id=get_value("YOOKASSA_PAYMENT_ORDER_SERVICE_ID"),
+        yookassa_payment_order_type=get_value("YOOKASSA_PAYMENT_ORDER_TYPE", "utilities") or "utilities",
+        yookassa_payment_order_purpose_prefix=get_value(
+            "YOOKASSA_PAYMENT_ORDER_PURPOSE_PREFIX",
+            "Оплата услуг Autoposter",
+        )
+        or "Оплата услуг Autoposter",
         database_path=database_path,
         queue_dir=queue_dir,
     )
