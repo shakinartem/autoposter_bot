@@ -1422,6 +1422,38 @@ class TelegramAdminBot:
         lines.append("Смена тарифа сейчас работает в тестовом режиме без реальной оплаты.")
         return "\n".join(lines)
 
+    def _send_payment_offer(
+        self,
+        chat_id: int,
+        *,
+        title: str,
+        amount_rub: int,
+        credits_amount: int,
+        confirmation_url: str,
+        back_callback: str,
+        extra_lines: list[str] | None = None,
+    ) -> None:
+        lines = [
+            "✅ Платёж создан.",
+            f"Сумма: {amount_rub} ₽",
+        ]
+        if credits_amount > 0:
+            lines.append(f"Кредиты после оплаты: {credits_amount}")
+        if extra_lines:
+            lines.extend(extra_lines)
+        lines.append("Нажмите кнопку оплаты ниже.")
+        self._safe_send_message(
+            chat_id,
+            "\n".join([title, *lines]),
+            reply_markup=self._keyboard(
+                [
+                    [("Оплатить", "url", confirmation_url)],
+                    [("⬅️ Назад", back_callback), ("🏠 Главное меню", "menu|main")],
+                ]
+            ),
+            ui=True,
+        )
+
     def _create_yookassa_topup(self, chat_id: int, package_key: str) -> None:
         package_value = YOOKASSA_TOPUP_PACKAGES.get(package_key)
         if package_value is None:
