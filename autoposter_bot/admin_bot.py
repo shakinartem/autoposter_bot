@@ -1477,8 +1477,15 @@ class TelegramAdminBot:
         user_id = self._current_user_id(chat_id)
         active_subscription = self.db.get_active_subscription(user_id)
         active_code = active_subscription["plan_code"] if active_subscription else None
+        current_plan = active_subscription["plan_name"] if active_subscription else "Без тарифа"
+        current_exp = active_subscription["expires_at"] if active_subscription and active_subscription["expires_at"] else "Не ограничено"
+        user = self.db.get_user(user_id)
         lines = [
             "💼 Тарифы",
+            "",
+            f"Текущий тариф: {current_plan}",
+            f"Подписка до: {current_exp}",
+            f"Баланс кредитов: {'∞ (admin)' if self._is_admin_user(user_id) else (user['credit_balance'] if user else 0)}",
             "",
             "➕ Доп. аккаунт: 350 ₽",
             "➕ Доп. пост: 35 ₽",
@@ -1490,12 +1497,14 @@ class TelegramAdminBot:
             accounts_per_platform = features.get("accounts_per_platform", "-")
             support = features.get("support", "-")
             post_limit = plan["monthly_post_limit"] if plan["monthly_post_limit"] is not None else "без лимита"
+            monthly_credit_grant = int(plan["monthly_credit_grant"] or 0)
             extra_account_price = features.get("extra_account_price_rub", 350)
             extra_post_price = features.get("extra_post_price_rub", 35)
             lines.extend(
                 [
                     f"{self._plan_emoji(plan['code'])} {plan['name']}{marker}",
                     f"💰 Цена: {plan['price_rub']} ₽/мес",
+                    f"💳 Кредитов в месяц: {monthly_credit_grant}",
                     f"🔗 Аккаунты: {accounts_per_platform} на каждую соцсеть",
                     f"📝 Посты: {post_limit} в месяц",
                     f"🎟️ Доп. аккаунт: {extra_account_price} ₽",
@@ -2016,9 +2025,13 @@ class TelegramAdminBot:
         post_price = int(features.get("extra_post_price_rub", 35))
         account_price = int(features.get("extra_account_price_rub", 350))
         period_key = self._period_key()
+        subscription = self.db.get_active_subscription(user_id)
+        expires_at = subscription["expires_at"] if subscription and subscription["expires_at"] else "Не ограничено"
         return "\n".join(
             [
                 "🧩 Дополнительные возможности",
+                f"Текущий тариф: {plan['name'] if plan else 'Без тарифа'}",
+                f"Подписка до: {expires_at}",
                 f"Период: {period_key}",
                 f"Баланс кредитов: {user['credit_balance']}",
                 "",
@@ -2027,6 +2040,10 @@ class TelegramAdminBot:
                 "",
                 f"🔗 Доп. аккаунт: {account_price} кредитов за 1 слот в выбранной соцсети",
                 "Покупка действует для текущего месяца.",
+                f"Telegram: +{self._extra_account_allowance(user_id, 'telegram')}",
+                f"VK: +{self._extra_account_allowance(user_id, 'vk')}",
+                f"Instagram: +{self._extra_account_allowance(user_id, 'instagram')}",
+                f"TikTok: +{self._extra_account_allowance(user_id, 'tiktok')}",
                 "",
                 f"Текущий тариф: {plan['name'] if plan else 'Без тарифа'}",
             ]
@@ -2775,11 +2792,23 @@ class TelegramAdminBot:
         features, plan = self._plan_features(user_id)
         post_price = int(features.get("extra_post_price_rub", 35))
         account_price = int(features.get("extra_account_price_rub", 350))
+        active_plan = self._active_plan_row(user_id)
+        accounts_per_platform = int(features.get("accounts_per_platform", 0) or 0)
+        monthly_post_limit = int(active_plan["monthly_post_limit"] or 0) if active_plan and active_plan["monthly_post_limit"] is not None else 0
+        monthly_credit_grant = int(active_plan["monthly_credit_grant"] or 0) if active_plan else 0
+        last_ops = self.db.list_credit_ledger(user_id, limit=3)
         lines = [
             "💰 Баланс",
             f"Текущий тариф: {current_plan}",
             f"Подписка до: {current_exp}",
             f"Кредиты: {user['credit_balance'] if user else 0}",
+            "",
+            "Текущий тариф в цифрах:",
+            f"• Аккаунтов на соцсеть: {accounts_per_platform or '-'}",
+            f"• Постов в месяц: {monthly_post_limit or 'без лимита'}",
+            f"• Кредитов в месяц: {monthly_credit_grant}",
+            f"• Доп. аккаунт: {account_price} ₽",
+            f"• Доп. пост: {post_price} ₽",
             "",
             "Цены:",
         ]
@@ -2789,8 +2818,24 @@ class TelegramAdminBot:
             [
                 "",
                 "• Пополнение: 500 ₽ / 1000 ₽ / 2500 ₽ или любая сумма",
-                f"• Доп +1 пост: {post_price} ₽",
-                f"• Доп +1 аккаунт: {account_price} ₽",
+                "",
+                "Последние операции:",
+            ]
+        )
+        if not last_ops:
+            lines.append("• Пока без операций.")
+        else:
+            for row in last_ops:
+                lines.append(self._format_credit_ledger_row(row))
+        lines.extend(
+            [
+                "",
+                "Допы:",
+                f"• Доп. постов куплено в этом месяце: {self._extra_post_allowance(user_id)}",
+                f"• Telegram: +{self._extra_account_allowance(user_id, 'telegram')}",
+                f"• VK: +{self._extra_account_allowance(user_id, 'vk')}",
+                f"• Instagram: +{self._extra_account_allowance(user_id, 'instagram')}",
+                f"• TikTok: +{self._extra_account_allowance(user_id, 'tiktok')}",
                 "",
                 f"В корзине: {self._balance_cart_count(chat_id)} поз.",
                 f"Сумма корзины: {self._balance_cart_total(chat_id)} ₽",
