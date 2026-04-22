@@ -398,7 +398,7 @@ class TelegramAdminBot:
 
     def _dispatch_addons_callback(self, chat_id: int, parts: list[str]) -> str:
         if len(parts) < 3 or parts[1] != "buy":
-            return "??????????? ???????? ? ???? ?????."
+            return "Неизвестное действие в допах."
         owner_user_id = self._current_user_id(chat_id)
         addon_kind = parts[2]
         features, _ = self._plan_features(owner_user_id)
@@ -409,16 +409,16 @@ class TelegramAdminBot:
                 {
                     "kind": "addon",
                     "addon_kind": "post",
-                    "label": "??? +1 ????",
+                    "label": "Доп +1 пост",
                     "amount_rub": price,
                     "credits_amount": 0,
                 },
             )
             self._send_balance_cart_menu(chat_id)
-            return "??? +1 ???? ???????? ? ???????."
+            return "Доп +1 пост добавлен в корзину."
         if addon_kind == "account":
             if len(parts) < 4:
-                return "???????? ??????? ??? ??????? ???. ????????."
+                return "Укажите соцсеть для допа аккаунта."
             platform = parts[3]
             price = int(features.get("extra_account_price_rub", 350))
             self._balance_add_item(
@@ -427,14 +427,14 @@ class TelegramAdminBot:
                     "kind": "addon",
                     "addon_kind": "account",
                     "platform": platform,
-                    "label": f"??? +1 ??????? {self._platform_label(platform)}",
+                    "label": f"Доп +1 аккаунт {self._platform_label(platform)}",
                     "amount_rub": price,
                     "credits_amount": 0,
                 },
             )
             self._send_balance_cart_menu(chat_id)
-            return f"??? +1 ??????? {self._platform_label(platform)} ???????? ? ???????."
-        return "??????????? ??? ????."
+            return f"Доп +1 аккаунт {self._platform_label(platform)} добавлен в корзину."
+        return "Неизвестный тип допа."
 
 
     def _dispatch_billing_callback(self, chat_id: int, parts: list[str]) -> str:
@@ -850,128 +850,6 @@ class TelegramAdminBot:
                 raise ValueError("TikTok требует ровно одно видео.")
             return "tiktok_video"
         raise ValueError(f"Неизвестная платформа: {platform}")
-
-    def _send_main_menu(self, chat_id: int) -> None:
-        self._safe_send_message(
-            chat_id,
-            "✨ Главное меню",
-            reply_markup=self._keyboard(
-                [
-                    [("📝 Создать пост", "menu|post"), ("🔗 Аккаунты", "menu|accounts")],
-                    [("👤 Профиль", "menu|profile"), ("💼 Тарифы", "menu|plans")],
-                    [("💳 Биллинг", "menu|billing"), ("🧩 Допы", "menu|addons")],
-                    [("🤝 Партнёрка", "menu|partner")],
-                    [("⏰ Запустить отложенные", "menu|run_due")],
-                ]
-            ),
-        )
-
-    def _send_profile_menu(self, chat_id: int) -> None:
-        self._safe_send_message(
-            chat_id,
-            self._profile_text(chat_id),
-            reply_markup=self._keyboard(
-                [
-                    [("💼 Тарифы", "menu|plans"), ("🔗 Аккаунты", "menu|accounts")],
-                    [("💳 Биллинг", "menu|billing"), ("🧩 Допы", "menu|addons")],
-                    [("🤝 Партнёрка", "menu|partner")],
-                    [("📝 Создать пост", "menu|post")],
-                    [("⬅️ Назад", "menu|main")],
-                ]
-            ),
-        )
-
-    def _send_plans_menu(self, chat_id: int) -> None:
-        rows: list[list[tuple[str, str]]] = []
-        for plan in self.db.list_plans():
-            price_rub = int(plan["price_rub"] or 0)
-            if price_rub > 0:
-                rows.append([(f"Оплатить {plan['name']} — {price_rub} ₽", f"bill|planpay|{plan['code']}")])
-            else:
-                rows.append([(f"{plan['name']} — бесплатно", "menu|billing")])
-        rows.extend(
-            [
-                [("💳 Биллинг", "menu|billing"), ("🧩 Допы", "menu|addons")],
-                [("👤 Профиль", "menu|profile")],
-                [("⬅️ Назад", "menu|main")],
-            ]
-        )
-        self._safe_send_message(
-            chat_id,
-            self._plans_text(chat_id),
-            reply_markup=self._keyboard(rows),
-        )
-
-    def _send_billing_menu(self, chat_id: int) -> None:
-        self._safe_send_message(
-            chat_id,
-            self._billing_text(chat_id),
-            reply_markup=self._keyboard(
-                [
-                    [("🔁 Сменить тариф", "bill|plans"), ("📜 История", "bill|history")],
-                    [("🧩 Допы", "menu|addons"), ("👤 Профиль", "menu|profile")],
-                    [("⬅️ Назад", "menu|main")],
-                ]
-            ),
-        )
-
-    def _send_payment_offer(
-        self,
-        chat_id: int,
-        *,
-        title: str,
-        amount_rub: int,
-        credits_amount: int,
-        confirmation_url: str,
-        back_callback: str,
-        extra_lines: list[str] | None = None,
-    ) -> None:
-        lines = [
-            "✅ Платёж создан.",
-            f"Сумма: {amount_rub} ₽",
-        ]
-        if credits_amount > 0:
-            lines.append(f"Кредиты после оплаты: {credits_amount}")
-        if extra_lines:
-            lines.extend(extra_lines)
-        lines.append("Нажмите кнопку оплаты ниже.")
-        self._safe_send_message(
-            chat_id,
-            "\n".join([title, *lines]),
-            reply_markup=self._keyboard(
-                [
-                    [("Оплатить", "url", confirmation_url)],
-                    [("⬅️ Назад", back_callback), ("🏠 Главное меню", "menu|main")],
-                ]
-            ),
-            ui=True,
-        )
-
-    def _send_plan_switch_menu(self, chat_id: int) -> None:
-        rows: list[list[tuple[str, str]]] = []
-        current = self.db.get_active_subscription(self._current_user_id(chat_id))
-        current_code = current["plan_code"] if current else None
-        for plan in self.db.list_plans():
-            label = f"{self._plan_emoji(plan['code'])} {plan['name']}"
-            if plan["code"] == current_code:
-                label = f"{label} ✅"
-            rows.append([(label[:30], f"bill|switch|{plan['code']}")])
-        rows.append([("💳 Назад в биллинг", "menu|billing")])
-        self._safe_send_message(chat_id, "💳 Выберите тариф для переключения", reply_markup=self._keyboard(rows))
-
-    def _send_addons_menu(self, chat_id: int) -> None:
-        self._safe_send_message(
-            chat_id,
-            self._addons_text(chat_id),
-            reply_markup=self._keyboard(
-                [
-                    [("📝 Купить +1 пост", "addons|buy|post")],
-                    [("🔗 +1 Telegram", "addons|buy|account|telegram"), ("🔗 +1 VK", "addons|buy|account|vk")],
-                    [("🔗 +1 Instagram", "addons|buy|account|instagram"), ("🔗 +1 TikTok", "addons|buy|account|tiktok")],
-                    [("👤 Профиль", "menu|profile"), ("⬅️ Назад", "menu|main")],
-                ]
-            ),
-        )
 
     def _send_partner_menu(self, chat_id: int) -> None:
         self._safe_send_message(
@@ -1549,15 +1427,15 @@ class TelegramAdminBot:
         if package_value is None:
             self._safe_send_message(
                 chat_id,
-                "??????????? ????? ??????????.",
+                "Неизвестный пакет пополнения.",
                 reply_markup=self._keyboard(
-                    [[("?? ?????", "menu|billing"), ("?? ??????? ????", "menu|main")]]
+                    [[("💰 Баланс", "menu|balance"), ("🏠 Главное меню", "menu|main")]]
                 ),
                 ui=True,
             )
             return None
         user_id = self._current_user_id(chat_id)
-        description = f"?????????? ??????? ?? {package_value} ????????"
+        description = f"Пополнение баланса на {package_value} кредитов"
         try:
             payment = self._create_yookassa_payment(
                 user_id=user_id,
@@ -1569,9 +1447,9 @@ class TelegramAdminBot:
         except Exception as exc:
             self._safe_send_message(
                 chat_id,
-                f"?? ??????? ??????? ??????: {exc}",
+                f"Не удалось создать платёж: {exc}",
                 reply_markup=self._keyboard(
-                    [[("?? ?????", "menu|billing"), ("?? ??????? ????", "menu|main")]]
+                    [[("💰 Баланс", "menu|balance"), ("🏠 Главное меню", "menu|main")]]
                 ),
                 ui=True,
             )
@@ -1581,21 +1459,21 @@ class TelegramAdminBot:
         if not confirmation_url:
             self._safe_send_message(
                 chat_id,
-                "?????? ??????, ?? ?????? ??? ?????? ?? ????????.",
+                "Платёж создан, но ссылка на оплату не пришла.",
                 reply_markup=self._keyboard(
-                    [[("?? ?????", "menu|billing"), ("?? ??????? ????", "menu|main")]]
+                    [[("💰 Баланс", "menu|balance"), ("🏠 Главное меню", "menu|main")]]
                 ),
                 ui=True,
             )
             return None
         self._send_payment_offer(
             chat_id,
-            title="?????????? ???????",
+            title="Пополнение баланса",
             amount_rub=package_value,
             credits_amount=package_value,
             confirmation_url=confirmation_url,
-            back_callback="menu|billing",
-            extra_lines=["????? ?????????? ????? ? ??????."],
+            back_callback="menu|balance",
+            extra_lines=["Пакет будет зачислен после оплаты."],
         )
         return None
 
@@ -1606,15 +1484,15 @@ class TelegramAdminBot:
         *,
         payment_kind: str = "plan",
         back_callback: str = "menu|plans",
-        title_prefix: str = "?????? ??????",
+        title_prefix: str = "Оплата тарифа",
     ) -> None:
         plan = self.db.get_plan_by_code(plan_code)
         if not plan or int(plan["price_rub"] or 0) <= 0:
             self._safe_send_message(
                 chat_id,
-                "????? ?????????? ??? ??????.",
+                "Тариф недоступен или бесплатный.",
                 reply_markup=self._keyboard(
-                    [[("?? ????? ? ???????", "menu|plans"), ("?? ??????? ????", "menu|main")]]
+                    [[("💼 Тарифы", "menu|plans"), ("🏠 Главное меню", "menu|main")]]
                 ),
                 ui=True,
             )
@@ -1639,9 +1517,9 @@ class TelegramAdminBot:
         except Exception as exc:
             self._safe_send_message(
                 chat_id,
-                f"?? ??????? ??????? ??????: {exc}",
+                f"Не удалось создать платёж: {exc}",
                 reply_markup=self._keyboard(
-                    [[("?? ????? ? ???????", "menu|plans"), ("?? ??????? ????", "menu|main")]]
+                    [[("💼 Тарифы", "menu|plans"), ("🏠 Главное меню", "menu|main")]]
                 ),
                 ui=True,
             )
@@ -1651,18 +1529,18 @@ class TelegramAdminBot:
         if not confirmation_url:
             self._safe_send_message(
                 chat_id,
-                "?????? ??????, ?? ?????? ??? ?????? ?? ????????.",
+                "Платёж создан, но ссылка на оплату не пришла.",
                 reply_markup=self._keyboard(
-                    [[("?? ????? ? ???????", "menu|plans"), ("?? ??????? ????", "menu|main")]]
+                    [[("💼 Тарифы", "menu|plans"), ("🏠 Главное меню", "menu|main")]]
                 ),
                 ui=True,
             )
             return None
-        extra_lines = [f"?????: {plan['name']}"]
+        extra_lines = [f"План: {plan['name']}"]
         if payment_kind == "plan_renewal":
-            extra_lines.append("????????? ?????? ????? ???????????? ????? ??????.")
+            extra_lines.append("Продление тарифа будет выполнено после оплаты.")
         elif credits_amount > 0:
-            extra_lines.append(f"???????? ????? ??????: +{credits_amount}")
+            extra_lines.append(f"Кредитов после оплаты: +{credits_amount}")
         self._send_payment_offer(
             chat_id,
             title=f"{title_prefix} {plan['name']}",
@@ -1683,8 +1561,8 @@ class TelegramAdminBot:
             chat_id,
             str(current["plan_code"]),
             payment_kind="plan_renewal",
-            back_callback="menu|billing",
-            title_prefix="????????? ??????",
+            back_callback="menu|balance",
+            title_prefix="Продление тарифа",
         )
         return None
 
@@ -1693,18 +1571,18 @@ class TelegramAdminBot:
         features, plan = self._plan_features(user_id)
         if addon_kind == "post":
             price_rub = int(features.get("extra_post_price_rub", 35))
-            description = "?????? ???? +1 ????"
-            extra_lines = ["??? +1 ???? ????? ??????????? ????? ??????."]
+            description = "Оплата допа: +1 пост"
+            extra_lines = ["Доп +1 пост будет доступен после оплаты."]
         elif addon_kind == "account":
             price_rub = int(features.get("extra_account_price_rub", 350))
-            description = f"?????? ???? +1 ??????? ??? {self._platform_label(platform or '')}"
-            extra_lines = [f"??? +1 ??????? ??? {self._platform_label(platform or '')} ????? ??????????? ????? ??????."]
+            description = f"Оплата допа: +1 аккаунт {self._platform_label(platform or '')}"
+            extra_lines = [f"Доп +1 аккаунт {self._platform_label(platform or '')} будет доступен после оплаты."]
         else:
             self._safe_send_message(
                 chat_id,
-                "??????????? ??? ??? ??????.",
+                "Неизвестный тип допа.",
                 reply_markup=self._keyboard(
-                    [[("?? ?????", "menu|addons"), ("?? ??????? ????", "menu|main")]]
+                    [[("🧩 Допы", "menu|addons"), ("🏠 Главное меню", "menu|main")]]
                 ),
                 ui=True,
             )
@@ -1725,9 +1603,9 @@ class TelegramAdminBot:
         except Exception as exc:
             self._safe_send_message(
                 chat_id,
-                f"?? ??????? ??????? ??????: {exc}",
+                f"Не удалось создать платёж: {exc}",
                 reply_markup=self._keyboard(
-                    [[("?? ?????", "menu|addons"), ("?? ??????? ????", "menu|main")]]
+                    [[("🧩 Допы", "menu|addons"), ("🏠 Главное меню", "menu|main")]]
                 ),
                 ui=True,
             )
@@ -1737,20 +1615,20 @@ class TelegramAdminBot:
         if not confirmation_url:
             self._safe_send_message(
                 chat_id,
-                "?????? ??????, ?? ?????? ??? ?????? ?? ????????.",
+                "Платёж создан, но ссылка на оплату не пришла.",
                 reply_markup=self._keyboard(
-                    [[("?? ?????", "menu|addons"), ("?? ??????? ????", "menu|main")]]
+                    [[("🧩 Допы", "menu|addons"), ("🏠 Главное меню", "menu|main")]]
                 ),
                 ui=True,
             )
             return None
         self._send_payment_offer(
             chat_id,
-            title="?????? ????",
+            title="Оплата допа",
             amount_rub=price_rub,
             credits_amount=0,
             confirmation_url=confirmation_url,
-            back_callback="menu|addons",
+            back_callback="menu|balance",
             extra_lines=extra_lines,
         )
         return None
@@ -1758,16 +1636,16 @@ class TelegramAdminBot:
     def _handle_billing_topup_message(self, chat_id: int, message: dict) -> str:
         text = (message.get("text") or "").strip()
         if not text or text.startswith("/"):
-            return "??????? ????? ?????????? ??????."
+            return "Введите сумму пополнения."
         normalized = text.replace(" ", "").replace(",", ".")
         try:
             amount_rub = int(float(normalized))
         except ValueError:
             self._safe_send_message(
                 chat_id,
-                "??????? ????? ?????? ??????. ????????: 750",
+                "Введите сумму пополнения числом. Например: 750",
                 reply_markup=self._keyboard(
-                    [[("?? ????? ? ???????", "menu|billing"), ("?? ??????? ????", "menu|main")]]
+                    [[("💰 Баланс", "menu|balance"), ("🏠 Главное меню", "menu|main")]]
                 ),
                 ui=True,
             )
@@ -1775,9 +1653,9 @@ class TelegramAdminBot:
         if amount_rub <= 0:
             self._safe_send_message(
                 chat_id,
-                "????? ?????? ???? ?????? ????.",
+                "Сумма должна быть больше нуля.",
                 reply_markup=self._keyboard(
-                    [[("?? ????? ? ???????", "menu|billing"), ("?? ??????? ????", "menu|main")]]
+                    [[("💰 Баланс", "menu|balance"), ("🏠 Главное меню", "menu|main")]]
                 ),
                 ui=True,
             )
@@ -1785,15 +1663,15 @@ class TelegramAdminBot:
         if amount_rub < 10:
             self._safe_send_message(
                 chat_id,
-                "??????????? ????? ??????????: 10 ?.",
+                "Минимальная сумма пополнения: 10 ₽.",
                 reply_markup=self._keyboard(
-                    [[("?? ????? ? ???????", "menu|billing"), ("?? ??????? ????", "menu|main")]]
+                    [[("💰 Баланс", "menu|balance"), ("🏠 Главное меню", "menu|main")]]
                 ),
                 ui=True,
             )
             return None
         user_id = self._current_user_id(chat_id)
-        description = f"?????????? ??????? ?? {amount_rub} ??????"
+        description = f"Пополнение баланса на {amount_rub} кредитов"
         try:
             payment = self._create_yookassa_payment(
                 user_id=user_id,
@@ -1805,9 +1683,9 @@ class TelegramAdminBot:
         except Exception as exc:
             self._safe_send_message(
                 chat_id,
-                f"?? ??????? ??????? ??????: {exc}",
+                f"Не удалось создать платёж: {exc}",
                 reply_markup=self._keyboard(
-                    [[("?? ????? ? ???????", "menu|billing"), ("?? ??????? ????", "menu|main")]]
+                    [[("💰 Баланс", "menu|balance"), ("🏠 Главное меню", "menu|main")]]
                 ),
                 ui=True,
             )
@@ -1817,21 +1695,21 @@ class TelegramAdminBot:
         if not confirmation_url:
             self._safe_send_message(
                 chat_id,
-                "?????? ??????, ?? ?????? ??? ?????? ?? ????????.",
+                "Платёж создан, но ссылка на оплату не пришла.",
                 reply_markup=self._keyboard(
-                    [[("?? ????? ? ???????", "menu|billing"), ("?? ??????? ????", "menu|main")]]
+                    [[("💰 Баланс", "menu|balance"), ("🏠 Главное меню", "menu|main")]]
                 ),
                 ui=True,
             )
             return None
         self._send_payment_offer(
             chat_id,
-            title="?????????? ???????",
+            title="Пополнение баланса",
             amount_rub=amount_rub,
             credits_amount=amount_rub,
             confirmation_url=confirmation_url,
-            back_callback="menu|billing",
-            extra_lines=["????? ???????????? ??? ?????? ??? ?????."],
+            back_callback="menu|balance",
+            extra_lines=["Сумма будет зачислена после оплаты."],
         )
         return None
 
@@ -2628,24 +2506,6 @@ class TelegramAdminBot:
                 lines.append(f"• {detail[:180]}")
         return "\n".join(lines)
 
-    def _send_main_menu(self, chat_id: int) -> None:
-        rows: list[list[tuple[str, str]]] = [
-            [("📝 Создать пост", "menu|post"), ("🔗 Аккаунты", "menu|accounts")],
-            [("👤 Профиль", "menu|profile"), ("📘 Инструкция", "menu|guide")],
-            [("💰 Баланс", "menu|balance"), ("🤝 Партнёрка", "menu|partner")],
-            [("🔔 Уведомления", "menu|notifications"), ("📜 История действий", "menu|activity")],
-        ]
-        if self._is_admin_user(self._current_user_id(chat_id)):
-            rows.append([("⏰ Запустить отложенные", "menu|run_due"), ("🛠 Управление БД", "menu|admin")])
-        else:
-            rows.append([("⏰ Запустить отложенные", "menu|run_due")])
-        self._safe_send_message(
-            chat_id,
-            "Главное меню. Кнопки теперь закреплены прямо под сообщением.",
-            reply_markup=self._keyboard(rows),
-            ui=True,
-        )
-
     def _send_profile_menu(self, chat_id: int) -> None:
         self._safe_send_message(
             chat_id,
@@ -2757,9 +2617,9 @@ class TelegramAdminBot:
         return len(self._balance_cart_items(chat_id))
 
     def _balance_cart_label(self, item: dict[str, Any]) -> str:
-        label = str(item.get("label") or "???????")
+        label = str(item.get("label") or "Позиция")
         amount_rub = int(item.get("amount_rub") or 0)
-        return f"{label} ? {amount_rub} ?"
+        return f"{label} — {amount_rub} ₽"
 
     def _balance_add_item(self, chat_id: int, item: dict[str, Any]) -> None:
         cart = self.balance_carts.setdefault(chat_id, [])
@@ -2882,7 +2742,7 @@ class TelegramAdminBot:
             return None
         return {
             "kind": "plan",
-            "label": f"????? {plan['name']}",
+            "label": f"Тариф {plan['name']}",
             "amount_rub": int(plan["price_rub"] or 0),
             "credits_amount": int(plan["monthly_credit_grant"] or 0),
             "plan_code": plan["code"],
@@ -2891,7 +2751,7 @@ class TelegramAdminBot:
     def _build_balance_topup_item(self, amount_rub: int) -> dict[str, Any]:
         return {
             "kind": "topup",
-            "label": f"?????????? {amount_rub} ?",
+            "label": f"Пополнение {amount_rub} ₽",
             "amount_rub": amount_rub,
             "credits_amount": amount_rub,
         }
@@ -2901,9 +2761,9 @@ class TelegramAdminBot:
         if not cart:
             self._safe_send_message(
                 chat_id,
-                "??????? ?????.",
+                "Корзина пуста.",
                 reply_markup=self._keyboard(
-                    [[("?? ???????", "balance|cart"), ("?? ??????", "menu|balance")], [("?? ?????", "menu|main")]]
+                    [[("🛒 Корзина", "balance|cart"), ("💰 Баланс", "menu|balance")], [("🏠 Главное меню", "menu|main")]]
                 ),
                 ui=True,
             )
@@ -2911,7 +2771,7 @@ class TelegramAdminBot:
         total_rub = self._balance_cart_total(chat_id)
         credits_amount = self._balance_cart_credits(chat_id)
         user_id = self._current_user_id(chat_id)
-        description = f"?????? ??????? ?? {total_rub} ??????"
+        description = f"Оплата корзины на {total_rub} ₽"
         try:
             payment = self._create_yookassa_payment(
                 user_id=user_id,
@@ -2926,9 +2786,9 @@ class TelegramAdminBot:
         except Exception as exc:
             self._safe_send_message(
                 chat_id,
-                f"?? ??????? ??????? ??????: {exc}",
+                f"Не удалось создать платёж: {exc}",
                 reply_markup=self._keyboard(
-                    [[("?? ???????", "balance|cart"), ("?? ??????", "menu|balance")], [("?? ?????", "menu|main")]]
+                    [[("🛒 Корзина", "balance|cart"), ("💰 Баланс", "menu|balance")], [("🏠 Главное меню", "menu|main")]]
                 ),
                 ui=True,
             )
@@ -2938,36 +2798,36 @@ class TelegramAdminBot:
         if not confirmation_url:
             self._safe_send_message(
                 chat_id,
-                "?????? ??????, ?? ?????? ??? ?????? ?? ????????.",
+                "Платёж создан, но ссылка на оплату не пришла.",
                 reply_markup=self._keyboard(
-                    [[("?? ???????", "balance|cart"), ("?? ??????", "menu|balance")], [("?? ?????", "menu|main")]]
+                    [[("🛒 Корзина", "balance|cart"), ("💰 Баланс", "menu|balance")], [("🏠 Главное меню", "menu|main")]]
                 ),
                 ui=True,
             )
             return None
         self._send_payment_offer(
             chat_id,
-            title="?????? ???????",
+            title="Оплата корзины",
             amount_rub=total_rub,
             credits_amount=credits_amount,
             confirmation_url=confirmation_url,
             back_callback="balance|cart",
-            extra_lines=[f"??????? ? ???????: {len(cart)}"],
+            extra_lines=[f"Позиции в корзине: {len(cart)}"],
         )
         return None
 
     def _handle_balance_custom_amount_message(self, chat_id: int, message: dict) -> str:
         text = (message.get("text") or "").strip()
         if not text or text.startswith("/"):
-            return "??????? ????? ?????????? ??????."
+            return "Введите сумму пополнения."
         normalized = text.replace(" ", "").replace(",", ".")
         try:
             amount_rub = int(float(normalized))
         except ValueError:
-            self._safe_send_message(chat_id, "??????? ????? ?????? ??????. ????????: 750")
+            self._safe_send_message(chat_id, "Введите сумму пополнения числом. Например: 750")
             return None
         if amount_rub <= 0:
-            self._safe_send_message(chat_id, "????? ?????? ???? ?????? ????.")
+            self._safe_send_message(chat_id, "Сумма должна быть больше нуля.")
             return None
         self._balance_add_item(chat_id, self._build_balance_topup_item(amount_rub))
         self.sessions.pop(chat_id, None)
@@ -3137,7 +2997,7 @@ class TelegramAdminBot:
 
     def _dispatch_billing_callback(self, chat_id: int, parts: list[str]) -> str:
         if len(parts) < 2:
-            return "??????????? ???????? ? ???????."
+            return "Неизвестное действие в балансе."
         action = parts[1]
         if action == "open":
             self._send_balance_menu(chat_id)
@@ -3157,15 +3017,15 @@ class TelegramAdminBot:
             if kind == "plan":
                 item = self._build_balance_plan_item(parts[3])
                 if not item:
-                    return "????? ??????????."
+                    return "Тариф недоступен."
                 self._balance_add_item(chat_id, item)
                 self._send_balance_cart_menu(chat_id)
-                return f"{item['label']} ???????? ? ???????."
+                return f"{item['label']} добавлен в корзину."
             if kind == "topup":
                 amount_rub = int(parts[3])
                 self._balance_add_item(chat_id, self._build_balance_topup_item(amount_rub))
                 self._send_balance_cart_menu(chat_id)
-                return f"?????????? {amount_rub} ? ????????? ? ???????."
+                return f"Пополнение на {amount_rub} ₽ добавлено в корзину."
             if kind == "addon":
                 if parts[3] == "post":
                     features, _ = self._plan_features(self._current_user_id(chat_id))
@@ -3175,13 +3035,13 @@ class TelegramAdminBot:
                         {
                             "kind": "addon",
                             "addon_kind": "post",
-                            "label": "??? +1 ????",
+                            "label": "Доп +1 пост",
                             "amount_rub": price,
                             "credits_amount": 0,
                         },
                     )
                     self._send_balance_cart_menu(chat_id)
-                    return "??? +1 ???? ???????? ? ???????."
+                    return "Доп +1 пост добавлен в корзину."
                 if parts[3] == "account" and len(parts) >= 5:
                     platform = parts[4]
                     features, _ = self._plan_features(self._current_user_id(chat_id))
@@ -3192,20 +3052,20 @@ class TelegramAdminBot:
                             "kind": "addon",
                             "addon_kind": "account",
                             "platform": platform,
-                            "label": f"??? +1 ??????? {self._platform_label(platform)}",
+                            "label": f"Доп +1 аккаунт {self._platform_label(platform)}",
                             "amount_rub": price,
                             "credits_amount": 0,
                         },
                     )
                     self._send_balance_cart_menu(chat_id)
-                    return f"??? +1 ??????? {self._platform_label(platform)} ???????? ? ???????."
+                    return f"Доп +1 аккаунт {self._platform_label(platform)} добавлен в корзину."
         if action == "custom_topup":
             self.sessions[chat_id] = {"flow": "balance_custom_topup"}
             self._safe_send_message(
                 chat_id,
-                "??????? ????? ?????????? ??????. ????????: 750",
+                "Введите сумму пополнения. Например: 750",
                 reply_markup=self._keyboard(
-                    [[("?? ????? ? ??????", "menu|balance"), ("?? ??????? ????", "menu|main")]]
+                    [[("💰 Баланс", "menu|balance"), ("🏠 Главное меню", "menu|main")]]
                 ),
                 ui=True,
             )
@@ -3213,11 +3073,11 @@ class TelegramAdminBot:
         if action == "remove" and len(parts) >= 3:
             removed = self._balance_remove_item(chat_id, int(parts[2]))
             self._send_balance_cart_menu(chat_id)
-            return "??????? ???????." if removed else "??????? ?? ???????."
+            return "Позиция удалена." if removed else "Позиция не найдена."
         if action == "clear":
             self._balance_clear_cart(chat_id)
             self._send_balance_cart_menu(chat_id)
-            return "??????? ???????."
+            return "Корзина очищена."
         if action == "checkout":
             self._create_yookassa_balance_payment(chat_id)
             return None
@@ -3227,15 +3087,15 @@ class TelegramAdminBot:
             amount_rub = int(parts[2])
             self._balance_add_item(chat_id, self._build_balance_topup_item(amount_rub))
             self._send_balance_cart_menu(chat_id)
-            return f"?????????? {amount_rub} ? ????????? ? ???????."
+            return f"Пополнение на {amount_rub} ₽ добавлено в корзину."
         if action == "planpay" and len(parts) >= 3:
             item = self._build_balance_plan_item(parts[2])
             if not item:
-                return "????? ??????????."
+                return "Тариф недоступен."
             self._balance_add_item(chat_id, item)
             self._send_balance_cart_menu(chat_id)
-            return f"{item['label']} ???????? ? ???????."
-        return "??????????? ???????? ? ???????."
+            return f"{item['label']} добавлен в корзину."
+        return "Неизвестное действие в балансе."
 
 
     def _notification_target_users(self) -> list[int]:
@@ -3452,7 +3312,7 @@ class TelegramAdminBot:
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if not self._is_yookassa_enabled():
-            raise ValueError("YooKassa ?? ?????????. ????????? YOOKASSA_SHOP_ID ? YOOKASSA_SECRET_KEY.")
+            raise ValueError("YooKassa не настроена. Укажите YOOKASSA_SHOP_ID и YOOKASSA_SECRET_KEY.")
         idempotence_key = f"pay_{user_id}_{int(time.time())}_{uuid4().hex}"
         payload = {
             "amount": {
@@ -3569,8 +3429,8 @@ class TelegramAdminBot:
         platform = metadata.get("platform")
         basket_json = metadata.get("basket_json")
         ledger_reason = "yookassa_topup"
-        notification_title = "?????? ???????????"
-        notification_body = f"?????? ?? {amount_rub} ? ???????????."
+        notification_title = "Платёж создан"
+        notification_body = f"Платёж на {amount_rub} ₽ ожидает подтверждения."
         if payment_kind == "basket" and basket_json:
             try:
                 basket = json.loads(basket_json)
@@ -3600,7 +3460,7 @@ class TelegramAdminBot:
                             },
                         )
                         total_credits += plan_grant
-                    summary_bits.append(f"????? {plan['name']}")
+                    summary_bits.append(f"Тариф {plan['name']}")
                 elif kind == "topup":
                     topup_amount = int(item.get("credits_amount") or item.get("amount_rub") or 0)
                     self.db.add_credit_transaction(
@@ -3615,7 +3475,7 @@ class TelegramAdminBot:
                         },
                     )
                     total_credits += topup_amount
-                    summary_bits.append(f"?????????? {topup_amount} ?")
+                    summary_bits.append(f"Пополнение {topup_amount} ₽")
                 elif kind == "addon":
                     addon_kind_item = str(item.get("addon_kind") or "")
                     item_platform = item.get("platform")
@@ -3632,7 +3492,7 @@ class TelegramAdminBot:
                                 "addon_kind": addon_kind_item,
                             },
                         )
-                        summary_bits.append("??? +1 ????")
+                        summary_bits.append("Доп +1 пост")
                     elif addon_kind_item == "account":
                         self.db.add_entitlement(
                             user_id,
@@ -3648,11 +3508,11 @@ class TelegramAdminBot:
                                 "platform": item_platform,
                             },
                         )
-                        summary_bits.append(f"??? +1 ??????? {self._platform_label(str(item_platform) if item_platform else '')}")
+                        summary_bits.append(f"Доп +1 аккаунт {self._platform_label(str(item_platform) if item_platform else '')}")
             credits_amount = total_credits
             payment_kind = "basket"
-            notification_title = "??????? ????????"
-            notification_body = "????????: " + ", ".join(summary_bits) if summary_bits else "??????? ????????."
+            notification_title = "Платёж корзины"
+            notification_body = "Состав: " + ", ".join(summary_bits) if summary_bits else "Пустая корзина."
         elif payment_kind in {"plan", "plan_renewal"} and plan_code:
             plan = self.db.get_plan_by_code(str(plan_code))
             if plan:
@@ -3674,8 +3534,8 @@ class TelegramAdminBot:
                         },
                     )
                     credits_amount = plan_grant
-                notification_title = "????? ???????"
-                notification_body = f"????? {plan['name']} ??????? ? ?????????."
+                notification_title = "Платёж тарифа"
+                notification_body = f"Тариф {plan['name']} активирован."
             else:
                 payment_kind = "topup"
         elif payment_kind == "addon" and addon_kind:
@@ -3692,8 +3552,8 @@ class TelegramAdminBot:
                         "addon_kind": addon_kind,
                     },
                 )
-                notification_title = "??? ???????"
-                notification_body = "??? +1 ???? ??????? ? ???????????."
+                notification_title = "Платёж допа"
+                notification_body = "Доп +1 пост активирован."
             elif addon_kind == "account":
                 self.db.add_entitlement(
                     user_id,
@@ -3710,8 +3570,8 @@ class TelegramAdminBot:
                     },
                 )
                 platform_label = self._platform_label(str(platform) if platform else "")
-                notification_title = "??? ???????"
-                notification_body = f"??? +1 ??????? ??? {platform_label} ??????? ? ???????????."
+                notification_title = "Платёж допа"
+                notification_body = f"Доп +1 аккаунт {platform_label} активирован."
         else:
             self.db.add_credit_transaction(
                 user_id,
@@ -3725,7 +3585,7 @@ class TelegramAdminBot:
                     "payment_kind": payment_kind,
                 },
             )
-            notification_body = f"?????? ?? {amount_rub} ? ???????????. ?? ?????? ????????? {credits_amount} ????????."
+            notification_body = f"Платёж на {amount_rub} ₽ подтверждён. Начислено {credits_amount} кредитов."
         self.db.mark_payment_status(
             YOOKASSA_PROVIDER,
             provider_payment_id,
@@ -3755,17 +3615,17 @@ class TelegramAdminBot:
         user_chat_id = self._chat_id_for_user(user_id)
         if user_chat_id is not None:
             if payment_kind in {"plan", "plan_renewal"} and plan_name:
-                message = f"? ????? {plan_name} ??????? ? ?????????."
+                message = f"Тариф {plan_name} активирован."
                 if credits_amount > 0:
-                    message += f" ????????? {credits_amount} ????????."
+                    message += f" Начислено {credits_amount} кредитов."
             elif payment_kind == "addon" and addon_kind == "post":
-                message = "? ??? +1 ???? ??????? ? ???????????."
+                message = "Доп +1 пост активирован."
             elif payment_kind == "addon" and addon_kind == "account":
-                message = f"? ??? +1 ??????? ??? {self._platform_label(str(platform) if platform else '')} ??????? ? ???????????."
+                message = f"Доп +1 аккаунт {self._platform_label(str(platform) if platform else '')} активирован."
             elif payment_kind == "basket":
-                message = f"? ??????? ????????. ????????? {credits_amount} ????????." if credits_amount else "? ??????? ????????."
+                message = f"Корзина оплачена. Начислено {credits_amount} кредитов." if credits_amount else "Корзина оплачена."
             else:
-                message = f"? ?????? {amount_rub} ? ???????????. ?? ?????? ????????? {credits_amount} ????????."
+                message = f"Платёж на {amount_rub} ₽ подтверждён. Начислено {credits_amount} кредитов."
             self._safe_send_message(user_chat_id, message)
 
 
@@ -3784,26 +3644,26 @@ class TelegramAdminBot:
         user = self.db.get_user(user_id)
         username = f"@{user['username']}" if user and user["username"] else "-"
         full_name = user["full_name"] if user else "-"
-        title = "?? ????? ??????"
+        title = "Платёж создан"
         if payment_kind in {"plan", "plan_renewal"}:
-            title = "?? ?????? ??????"
+            title = "Платёж тарифа"
         elif payment_kind == "addon":
-            title = "?? ?????? ????"
+            title = "Платёж допа"
         elif payment_kind == "basket":
-            title = "?? ?????? ???????"
+            title = "Платёж корзины"
         lines = [
             title,
-            f"????????????: {full_name}",
+            f"Пользователь: {full_name}",
             f"Telegram ID: {user['telegram_user_id'] if user else '-'}",
             f"Username: {username}",
-            f"?????: {amount_rub} ?",
-            f"????????? ????????: {credits_amount}",
-            f"??????: {provider_payment_id}",
+            f"Сумма: {amount_rub} ₽",
+            f"Кредитов: {credits_amount}",
+            f"Платёж: {provider_payment_id}",
         ]
         if payment_title:
-            lines.insert(1, f"?????: {payment_title}")
+            lines.insert(1, f"Товар: {payment_title}")
         if addon_kind:
-            addon_text = "???: +1 ????" if addon_kind == "post" else f"???: +1 ??????? {self._platform_label(platform or '')}"
+            addon_text = "Доп: +1 пост" if addon_kind == "post" else f"Доп: +1 аккаунт {self._platform_label(platform or '')}"
             lines.insert(1, addon_text)
         text = "\n".join(lines)
         for admin_user_id in self._notification_target_users():
@@ -4009,18 +3869,18 @@ class TelegramAdminBot:
 
     def _send_main_menu(self, chat_id: int) -> None:
         rows: list[list[tuple[str, str]]] = [
-            [("?? ??????? ????", "menu|post"), ("?? ????????", "menu|accounts")],
-            [("?? ???????", "menu|profile"), ("?? ??????????", "menu|guide")],
-            [("?? ??????", "menu|balance"), ("?? ?????????", "menu|partner")],
-            [("?? ???????????", "menu|notifications"), ("?? ??????? ????????", "menu|activity")],
+            [("📝 Создать пост", "menu|post"), ("🔗 Аккаунты", "menu|accounts")],
+            [("👤 Профиль", "menu|profile"), ("📘 Инструкция", "menu|guide")],
+            [("💰 Баланс", "menu|balance"), ("🤝 Партнёрка", "menu|partner")],
+            [("🔔 Уведомления", "menu|notifications"), ("📜 История действий", "menu|activity")],
         ]
         if self._is_admin_user(self._current_user_id(chat_id)):
-            rows.append([("? ????????? ??????????", "menu|run_due"), ("?? ?????????? ??", "menu|admin")])
+            rows.append([("⏰ Запустить отложенные", "menu|run_due"), ("🛠 Управление БД", "menu|admin")])
         else:
-            rows.append([("? ????????? ??????????", "menu|run_due")])
+            rows.append([("⏰ Запустить отложенные", "menu|run_due")])
         self._safe_send_message(
             chat_id,
-            "? ??????? ????. ?????? ?????? ?????????? ????? ??? ??????????.",
+            "Главное меню. Кнопки теперь закреплены прямо под сообщением.",
             reply_markup=self._keyboard(rows),
             ui=True,
         )
@@ -4318,7 +4178,7 @@ class TelegramAdminBot:
         session = self.sessions.get(chat_id)
         if not session:
             self._send_main_menu(chat_id)
-            return "??????????? ?????? ???? ????."
+            return "Неизвестная сессия, показано главное меню."
         flow = session.get("flow")
         if flow == "account_add":
             return self._handle_add_account_message(chat_id, message)
@@ -4331,7 +4191,7 @@ class TelegramAdminBot:
         if flow == "balance_custom_topup":
             return self._handle_balance_custom_amount_message(chat_id, message)
         self._send_main_menu(chat_id)
-        return "??????????? ?????? ???? ????."
+        return "Неизвестная сессия, показано главное меню."
 
 
     def _handle_main_reply_keyboard_text(self, chat_id: int, text: str) -> bool:
@@ -4376,7 +4236,7 @@ class TelegramAdminBot:
             processed = process_due_db_jobs(self.service, self.db, dry_run=False)
             self._safe_send_message(
                 chat_id,
-                f"?????????? ?????????? ??????: {len(processed)}",
+                f"Обработано отложенных постов: {len(processed)}",
                 reply_markup=self._admin_back_markup(),
                 ui=True,
             )
@@ -4430,7 +4290,7 @@ class TelegramAdminBot:
             processed = process_due_db_jobs(self.service, self.db, dry_run=False)
             self._safe_send_message(
                 chat_id,
-                f"?????????? ?????????? ??????: {len(processed)}",
+                f"Обработано отложенных постов: {len(processed)}",
                 reply_markup=self._admin_back_markup(),
                 ui=True,
             )
@@ -4450,7 +4310,7 @@ class TelegramAdminBot:
             return self._dispatch_post_callback(chat_id, parts)
         if parts[0] == "admin":
             return self._dispatch_admin_callback(chat_id, parts)
-        return "??????????? ????????."
+        return "Неизвестное действие."
 
 
     def _test_media_command(self, text: str, media_type: str, chat_id: int) -> str:
