@@ -5,7 +5,7 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
 from autoposter_bot.models import MediaItem, PostJob, Target
 
@@ -16,7 +16,10 @@ CREATE TABLE IF NOT EXISTS users (
     telegram_user_id INTEGER NOT NULL UNIQUE,
     username TEXT,
     full_name TEXT,
+    phone_number TEXT,
     role TEXT NOT NULL DEFAULT 'user',
+    is_registered INTEGER NOT NULL DEFAULT 0,
+    registered_at TEXT,
     credit_balance INTEGER NOT NULL DEFAULT 0,
     is_active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL
@@ -91,6 +94,50 @@ CREATE TABLE IF NOT EXISTS referral_events (
     FOREIGN KEY(referred_user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    dedupe_key TEXT,
+    is_read INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS publish_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    job_id INTEGER,
+    external_post_id TEXT,
+    platform TEXT NOT NULL,
+    destination TEXT,
+    status TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS payments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    provider TEXT NOT NULL,
+    provider_payment_id TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL,
+    amount_rub INTEGER NOT NULL,
+    currency TEXT NOT NULL DEFAULT 'RUB',
+    credits_amount INTEGER NOT NULL DEFAULT 0,
+    description TEXT NOT NULL DEFAULT '',
+    confirmation_url TEXT,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    processed_at TEXT,
+    notified_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS accounts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     owner_user_id INTEGER,
@@ -153,10 +200,23 @@ class Database:
     def init_schema(self) -> None:
         with self.connect() as connection:
             connection.executescript(SCHEMA)
+            self._migrate_users_table(connection)
             self._migrate_job_media_table(connection)
             self._migrate_accounts_table(connection)
             self._migrate_jobs_table(connection)
+            self._migrate_referral_events_table(connection)
             self._seed_default_plans(connection)
+
+    def _migrate_users_table(self, connection: sqlite3.Connection) -> None:
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(users)").fetchall()}
+        if "phone_number" not in columns:
+            connection.execute("ALTER TABLE users ADD COLUMN phone_number TEXT")
+        if "is_registered" not in columns:
+            connection.execute("ALTER TABLE users ADD COLUMN is_registered INTEGER NOT NULL DEFAULT 0")
+            connection.execute("UPDATE users SET is_registered = 1")
+        if "registered_at" not in columns:
+            connection.execute("ALTER TABLE users ADD COLUMN registered_at TEXT")
+            connection.execute("UPDATE users SET registered_at = created_at WHERE is_registered = 1 AND registered_at IS NULL")
 
     def _migrate_job_media_table(self, connection: sqlite3.Connection) -> None:
         columns = {
@@ -178,6 +238,26 @@ class Database:
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(jobs)").fetchall()}
         if "owner_user_id" not in columns:
             connection.execute("ALTER TABLE jobs ADD COLUMN owner_user_id INTEGER")
+
+    def _migrate_referral_events_table(self, connection: sqlite3.Connection) -> None:
+        rows = connection.execute(
+            """
+            SELECT id, referrer_user_id
+            FROM referral_events
+            ORDER BY referrer_user_id, id
+            """
+        ).fetchall()
+        if not rows:
+            return
+        counts: dict[int, int] = {}
+        for row in rows:
+            referrer_user_id = int(row["referrer_user_id"])
+            reward_amount = 100 + counts.get(referrer_user_id, 0) * 50
+            connection.execute(
+                "UPDATE referral_events SET reward_amount = ? WHERE id = ?",
+                (reward_amount, int(row["id"])),
+            )
+            counts[referrer_user_id] = counts.get(referrer_user_id, 0) + 1
 
     def _seed_default_plans(self, connection: sqlite3.Connection) -> None:
         defaults = [
@@ -308,8 +388,8 @@ class Database:
                 return refreshed
             connection.execute(
                 """
-                INSERT INTO users(telegram_user_id, username, full_name, role, credit_balance, is_active, created_at)
-                VALUES (?, ?, ?, 'user', 0, 1, ?)
+                INSERT INTO users(telegram_user_id, username, full_name, phone_number, role, is_registered, registered_at, credit_balance, is_active, created_at)
+                VALUES (?, ?, ?, NULL, 'user', 0, NULL, 0, 1, ?)
                 """,
                 (telegram_user_id, username, full_name, datetime.utcnow().isoformat()),
             )
@@ -338,6 +418,109 @@ class Database:
                 "UPDATE users SET role = ? WHERE id = ?",
                 (role, user_id),
             )
+
+    def complete_user_registration(
+        self,
+        user_id: int,
+        full_name: str | None = None,
+        phone_number: str | None = None,
+    ) -> None:
+        with self.connect() as connection:
+            if full_name is None and phone_number is None:
+                connection.execute(
+                    """
+                    UPDATE users
+                    SET is_registered = 1,
+                        registered_at = COALESCE(registered_at, ?)
+                    WHERE id = ?
+                    """,
+                    (datetime.utcnow().isoformat(), user_id),
+                )
+            else:
+                next_full_name = full_name
+                next_phone_number = phone_number
+                connection.execute(
+                    """
+                    UPDATE users
+                    SET full_name = COALESCE(?, full_name),
+                        phone_number = COALESCE(?, phone_number),
+                        is_registered = 1,
+                        registered_at = COALESCE(registered_at, ?)
+                    WHERE id = ?
+                    """,
+                    (next_full_name, next_phone_number, datetime.utcnow().isoformat(), user_id),
+                )
+
+    def list_users_by_role(self, role: str) -> list[sqlite3.Row]:
+        with self.connect() as connection:
+            return list(
+                connection.execute(
+                    "SELECT * FROM users WHERE role = ? AND is_active = 1 ORDER BY id",
+                    (role,),
+                ).fetchall()
+            )
+
+    def list_users(self, limit: int = 50) -> list[sqlite3.Row]:
+        with self.connect() as connection:
+            return list(
+                connection.execute(
+                    """
+                    SELECT id, telegram_user_id, username, full_name, phone_number, role, is_registered, is_active, created_at, registered_at, credit_balance
+                    FROM users
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                ).fetchall()
+            )
+
+    def list_all_users(self) -> list[sqlite3.Row]:
+        with self.connect() as connection:
+            return list(
+                connection.execute(
+                    """
+                    SELECT id, telegram_user_id, username, full_name, phone_number, role, is_registered, is_active, created_at, registered_at, credit_balance
+                    FROM users
+                    ORDER BY id ASC
+                    """
+                ).fetchall()
+            )
+
+    def delete_user_by_telegram_id(self, telegram_user_id: int) -> bool:
+        with self.connect() as connection:
+            user = connection.execute(
+                "SELECT id FROM users WHERE telegram_user_id = ?",
+                (telegram_user_id,),
+            ).fetchone()
+            if not user:
+                return False
+            user_id = int(user["id"])
+            job_ids = [
+                int(row["id"])
+                for row in connection.execute(
+                    "SELECT id FROM jobs WHERE owner_user_id = ?",
+                    (user_id,),
+                ).fetchall()
+            ]
+            if job_ids:
+                placeholders = ",".join("?" for _ in job_ids)
+                connection.execute(f"DELETE FROM job_media WHERE job_id IN ({placeholders})", job_ids)
+                connection.execute(f"DELETE FROM job_targets WHERE job_id IN ({placeholders})", job_ids)
+                connection.execute(f"DELETE FROM jobs WHERE id IN ({placeholders})", job_ids)
+            connection.execute("DELETE FROM accounts WHERE owner_user_id = ?", (user_id,))
+            connection.execute("DELETE FROM subscriptions WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM credit_ledger WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM user_entitlements WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM referral_codes WHERE user_id = ?", (user_id,))
+            connection.execute(
+                "DELETE FROM referral_events WHERE referrer_user_id = ? OR referred_user_id = ?",
+                (user_id, user_id),
+            )
+            connection.execute("DELETE FROM notifications WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM publish_events WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM payments WHERE user_id = ?", (user_id,))
+            cursor = connection.execute("DELETE FROM users WHERE id = ?", (user_id,))
+            return cursor.rowcount > 0
 
     def list_plans(self, only_active: bool = True) -> list[sqlite3.Row]:
         query = "SELECT * FROM plans"
@@ -411,6 +594,20 @@ class Database:
                     (user_id, limit),
                 ).fetchall()
             )
+
+    def get_credit_totals(self, user_id: int) -> sqlite3.Row:
+        with self.connect() as connection:
+            return connection.execute(
+                """
+                SELECT
+                    COALESCE(SUM(CASE WHEN delta > 0 THEN delta ELSE 0 END), 0) AS total_in,
+                    COALESCE(SUM(CASE WHEN delta < 0 THEN -delta ELSE 0 END), 0) AS total_out,
+                    COALESCE(COUNT(*), 0) AS transactions_count
+                FROM credit_ledger
+                WHERE user_id = ?
+                """,
+                (user_id,),
+            ).fetchone()
 
     def add_entitlement(
         self,
@@ -558,6 +755,235 @@ class Database:
                 (user_id, user_id, user_id),
             ).fetchone()
 
+    def add_notification(
+        self,
+        user_id: int,
+        *,
+        kind: str,
+        title: str,
+        body: str,
+        dedupe_key: str | None = None,
+    ) -> int | None:
+        with self.connect() as connection:
+            if dedupe_key:
+                existing = connection.execute(
+                    """
+                    SELECT id
+                    FROM notifications
+                    WHERE user_id = ? AND dedupe_key = ?
+                    LIMIT 1
+                    """,
+                    (user_id, dedupe_key),
+                ).fetchone()
+                if existing:
+                    return None
+            cursor = connection.execute(
+                """
+                INSERT INTO notifications(user_id, kind, title, body, dedupe_key, is_read, created_at)
+                VALUES (?, ?, ?, ?, ?, 0, ?)
+                """,
+                (
+                    user_id,
+                    kind,
+                    title,
+                    body,
+                    dedupe_key,
+                    datetime.utcnow().isoformat(),
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def count_unread_notifications(self, user_id: int) -> int:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM notifications
+                WHERE user_id = ? AND is_read = 0
+                """,
+                (user_id,),
+            ).fetchone()
+            return int(row["count"] if row else 0)
+
+    def list_notifications(self, user_id: int, limit: int = 20) -> list[sqlite3.Row]:
+        with self.connect() as connection:
+            return list(
+                connection.execute(
+                    """
+                    SELECT id, kind, title, body, is_read, created_at
+                    FROM notifications
+                    WHERE user_id = ?
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (user_id, limit),
+                ).fetchall()
+            )
+
+    def mark_notifications_read(self, user_id: int) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE notifications SET is_read = 1 WHERE user_id = ? AND is_read = 0",
+                (user_id,),
+            )
+
+    def add_publish_event(
+        self,
+        user_id: int,
+        *,
+        platform: str,
+        destination: str | None,
+        status: str,
+        detail: str,
+        job_id: int | None = None,
+        external_post_id: str | None = None,
+    ) -> int:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO publish_events(user_id, job_id, external_post_id, platform, destination, status, detail, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    user_id,
+                    job_id,
+                    external_post_id,
+                    platform.lower(),
+                    destination,
+                    status,
+                    detail,
+                    datetime.utcnow().isoformat(),
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def list_publish_events(self, user_id: int, limit: int = 20) -> list[sqlite3.Row]:
+        with self.connect() as connection:
+            return list(
+                connection.execute(
+                    """
+                    SELECT id, job_id, external_post_id, platform, destination, status, detail, created_at
+                    FROM publish_events
+                    WHERE user_id = ?
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (user_id, limit),
+                ).fetchall()
+            )
+
+    def count_publish_events(self, user_id: int) -> int:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) AS count FROM publish_events WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+            return int(row["count"] if row else 0)
+
+    def create_payment(
+        self,
+        *,
+        user_id: int,
+        provider: str,
+        provider_payment_id: str,
+        status: str,
+        amount_rub: int,
+        credits_amount: int,
+        description: str,
+        confirmation_url: str | None,
+        payload: dict | None = None,
+    ) -> int:
+        now = datetime.utcnow().isoformat()
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO payments(
+                    user_id,
+                    provider,
+                    provider_payment_id,
+                    status,
+                    amount_rub,
+                    currency,
+                    credits_amount,
+                    description,
+                    confirmation_url,
+                    payload_json,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    user_id,
+                    provider,
+                    provider_payment_id,
+                    status,
+                    amount_rub,
+                    "RUB",
+                    credits_amount,
+                    description,
+                    confirmation_url,
+                    json.dumps(payload or {}, ensure_ascii=False),
+                    now,
+                    now,
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def get_payment_by_provider_id(self, provider: str, provider_payment_id: str) -> sqlite3.Row | None:
+        with self.connect() as connection:
+            return connection.execute(
+                """
+                SELECT *
+                FROM payments
+                WHERE provider = ? AND provider_payment_id = ?
+                LIMIT 1
+                """,
+                (provider, provider_payment_id),
+            ).fetchone()
+
+    def list_pending_payments(self, provider: str | None = None) -> list[sqlite3.Row]:
+        query = "SELECT * FROM payments WHERE processed_at IS NULL"
+        params: list[Any] = []
+        if provider:
+            query += " AND provider = ?"
+            params.append(provider)
+        query += " ORDER BY id ASC"
+        with self.connect() as connection:
+            return list(connection.execute(query, params).fetchall())
+
+    def mark_payment_status(
+        self,
+        provider: str,
+        provider_payment_id: str,
+        *,
+        status: str,
+        payload: dict | None = None,
+        confirmation_url: str | None = None,
+        processed_at: str | None = None,
+        notified_at: str | None = None,
+    ) -> None:
+        updates = ["status = ?", "updated_at = ?"]
+        values: list[Any] = [status, datetime.utcnow().isoformat()]
+        if payload is not None:
+            updates.append("payload_json = ?")
+            values.append(json.dumps(payload, ensure_ascii=False))
+        if confirmation_url is not None:
+            updates.append("confirmation_url = ?")
+            values.append(confirmation_url)
+        if processed_at is not None:
+            updates.append("processed_at = ?")
+            values.append(processed_at)
+        if notified_at is not None:
+            updates.append("notified_at = ?")
+            values.append(notified_at)
+        values.extend([provider, provider_payment_id])
+        with self.connect() as connection:
+            connection.execute(
+                f"UPDATE payments SET {', '.join(updates)} WHERE provider = ? AND provider_payment_id = ?",
+                values,
+            )
+
     def activate_subscription(
         self,
         user_id: int,
@@ -630,6 +1056,14 @@ class Database:
                     """,
                     (user_id, platform.lower()),
                 ).fetchone()
+            return int(row["count"] if row else 0)
+
+    def count_jobs_for_user(self, user_id: int) -> int:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) AS count FROM jobs WHERE owner_user_id = ?",
+                (user_id,),
+            ).fetchone()
             return int(row["count"] if row else 0)
 
     def list_accounts(self, owner_user_id: int | None = None) -> list[sqlite3.Row]:
@@ -822,7 +1256,7 @@ class Database:
         with self.connect() as connection:
             rows = connection.execute(
                 """
-                SELECT id, external_post_id, content_type, text, scheduled_at, metadata_json
+                SELECT id, owner_user_id, external_post_id, content_type, text, scheduled_at, metadata_json
                 FROM jobs
                 WHERE status = 'pending'
                   AND (scheduled_at IS NULL OR scheduled_at <= ?)
@@ -878,7 +1312,11 @@ class Database:
                             )
                             for target_row in target_rows
                         ],
-                        metadata={"job_id": job_id, **json.loads(row["metadata_json"] or "{}")},
+                        metadata={
+                            "job_id": job_id,
+                            "owner_user_id": row["owner_user_id"],
+                            **json.loads(row["metadata_json"] or "{}"),
+                        },
                     )
                 )
             return jobs

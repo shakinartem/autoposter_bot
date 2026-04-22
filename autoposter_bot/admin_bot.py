@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import io
 import json
 import time
 from dataclasses import dataclass, field
@@ -10,6 +12,7 @@ from uuid import uuid4
 
 import requests
 from requests import exceptions as request_exceptions
+from requests.auth import HTTPBasicAuth
 
 from autoposter_bot.cloudinary_client import CloudinaryClient
 from autoposter_bot.config import Settings, load_settings
@@ -26,6 +29,27 @@ from autoposter_bot.token_health import (
 PLATFORM_ADMIN_IDS = {5027592714}
 REFERRAL_REWARD_REFERRER = 100
 REFERRAL_REWARD_REFERRED = 100
+REFERRAL_REWARD_STEP = 50
+WELCOME_BUTTON_FAQ = "❓ FAQ"
+WELCOME_BUTTON_REGISTER = "✅ Регистрация"
+MENU_BUTTON_GUIDE = "📘 Инструкция"
+MENU_BUTTON_ADMIN = "🛠 Управление БД"
+MENU_BUTTON_POST = "📝 Создать пост"
+MENU_BUTTON_ACCOUNTS = "🔗 Аккаунты"
+MENU_BUTTON_PROFILE = "👤 Профиль"
+MENU_BUTTON_PLANS = "💼 Тарифы"
+MENU_BUTTON_BILLING = "💳 Биллинг"
+MENU_BUTTON_ADDONS = "🧩 Допы"
+MENU_BUTTON_PARTNER = "🤝 Партнёрка"
+MENU_BUTTON_NOTIFICATIONS = "🔔 Уведомления"
+MENU_BUTTON_ACTIVITY = "📜 История действий"
+MENU_BUTTON_RUN_DUE = "⏰ Запустить отложенные"
+YOOKASSA_PROVIDER = "yookassa"
+YOOKASSA_TOPUP_PACKAGES = {
+    "500": 500,
+    "1000": 1000,
+    "2500": 2500,
+}
 
 
 @dataclass(slots=True)
@@ -54,8 +78,11 @@ class TelegramAdminBot:
         self.last_instagram_warning_key: str | None = None
         self.last_warning_check_at = 0.0
         self.last_due_jobs_check_at = 0.0
+        self.last_payment_check_at = 0.0
         self.sessions: dict[int, dict[str, Any]] = {}
         self.chat_user_ids: dict[int, int] = {}
+        self.ui_message_ids: dict[int, int] = {}
+        self.ui_edit_targets: dict[int, int] = {}
 
     def run(self) -> None:
         self.db.init_schema()
@@ -63,6 +90,7 @@ class TelegramAdminBot:
         while True:
             self._maybe_send_token_warnings()
             self._maybe_process_due_jobs()
+            self._maybe_process_yookassa_payments()
             try:
                 updates = self._get_updates(offset)
             except request_exceptions.ReadTimeout:
@@ -111,6 +139,28 @@ class TelegramAdminBot:
             return
         self._ensure_current_user(chat_id, message.get("from") or {})
         start_ref_message = self._maybe_apply_referral(chat_id, text)
+        if not self._is_registered_current_user(chat_id):
+            if self._handle_welcome_contact(chat_id, message):
+                if start_ref_message:
+                    self._safe_send_message(chat_id, start_ref_message)
+                return
+            if self._handle_welcome_reply_keyboard_text(chat_id, text):
+                if start_ref_message:
+                    self._safe_send_message(chat_id, start_ref_message)
+                return
+            if text.startswith("/start") or text.startswith("/menu") or text.startswith("/help"):
+                self._reset_session(chat_id)
+                self._send_welcome_menu(chat_id)
+                if start_ref_message:
+                    self._safe_send_message(chat_id, start_ref_message)
+                return
+            self._send_welcome_menu(chat_id)
+            reply = "Сначала завершите регистрацию, чтобы открыть полный интерфейс."
+            print(f"[admin-bot] reply for chat_id={chat_id}: {reply}")
+            self._safe_send_message(chat_id, reply)
+            return
+        if self._handle_main_reply_keyboard_text(chat_id, text):
+            return
 
         received_at = datetime.fromtimestamp(
             message.get("date", int(time.time())),
@@ -144,10 +194,13 @@ class TelegramAdminBot:
         message = callback_query.get("message") or {}
         chat = message.get("chat") or {}
         chat_id = int(chat.get("id", 0))
+        message_id = message.get("message_id")
         user_id = callback_query.get("from", {}).get("id")
         data = callback_query.get("data", "")
         print(f"[admin-bot] callback from user_id={user_id} chat_id={chat_id} data={data!r}")
 
+        if chat_id and message_id:
+            self.ui_edit_targets[chat_id] = int(message_id)
         self._answer_callback_query(callback_id)
         if not self._is_allowed(user_id):
             reply = "Доступ запрещён."
@@ -168,14 +221,18 @@ class TelegramAdminBot:
             return None
         if text.startswith("/accounts"):
             self._send_accounts_menu(chat_id)
-            return self._accounts_text(chat_id)
+            return None
         if text.startswith("/vk_token_status"):
+            self._require_admin(chat_id)
             return self._vk_token_status()
         if text.startswith("/set_vk_token "):
+            self._require_admin(chat_id)
             return self._set_vk_token(text, received_at)
         if text.startswith("/instagram_token_status"):
+            self._require_admin(chat_id)
             return self._instagram_token_status()
         if text.startswith("/set_instagram_token "):
+            self._require_admin(chat_id)
             return self._set_instagram_token(text, received_at, chat_id)
         if text.startswith("/delete_account "):
             return self._delete_account_command(text, chat_id)
@@ -209,6 +266,8 @@ class TelegramAdminBot:
             return self._handle_edit_account_message(chat_id, message, received_at)
         if flow == "post":
             return self._handle_post_message(chat_id, message, received_at)
+        if flow == "admin_db":
+            return self._handle_admin_db_message(chat_id, message)
 
         self._send_main_menu(chat_id)
         return "Используйте кнопки меню."
@@ -223,6 +282,9 @@ class TelegramAdminBot:
             self._reset_session(chat_id)
             self._send_profile_menu(chat_id)
             return None
+        if parts[:2] == ["menu", "guide"]:
+            self._send_guide_menu(chat_id)
+            return None
         if parts[:2] == ["menu", "plans"]:
             self._send_plans_menu(chat_id)
             return None
@@ -235,6 +297,12 @@ class TelegramAdminBot:
         if parts[:2] == ["menu", "partner"]:
             self._send_partner_menu(chat_id)
             return None
+        if parts[:2] == ["menu", "notifications"]:
+            self._send_notifications_menu(chat_id)
+            return None
+        if parts[:2] == ["menu", "activity"]:
+            self._send_activity_menu(chat_id)
+            return None
         if parts[:2] == ["menu", "accounts"]:
             self._reset_session(chat_id)
             self._send_accounts_menu(chat_id)
@@ -243,6 +311,7 @@ class TelegramAdminBot:
             self._start_post_flow(chat_id)
             return None
         if parts[:2] == ["menu", "run_due"]:
+            self._require_admin(chat_id)
             processed = process_due_db_jobs(self.service, self.db, dry_run=False)
             return f"Обработано отложенных постов: {len(processed)}"
 
@@ -615,6 +684,7 @@ class TelegramAdminBot:
     def _publish_draft_now(self, draft: PostDraft, owner_user_id: int) -> str:
         job = self._draft_to_job(draft, owner_user_id=owner_user_id)
         results = self.service.publish_job(job, dry_run=False)
+        self._log_publish_results(owner_user_id, results, external_post_id=job.post_id)
         if results and all(result.ok for result in results):
             charge_detail = self._charge_for_post_if_needed(owner_user_id)
             self.db.create_job(
@@ -655,6 +725,25 @@ class TelegramAdminBot:
         if charge_detail:
             message = f"{message}\n{charge_detail}"
         return message
+
+    def _log_publish_results(
+        self,
+        user_id: int,
+        results: list,
+        *,
+        external_post_id: str | None = None,
+        job_id: int | None = None,
+    ) -> None:
+        for result in results:
+            self.db.add_publish_event(
+                user_id,
+                job_id=job_id,
+                external_post_id=external_post_id,
+                platform=result.platform,
+                destination=result.destination,
+                status="ok" if result.ok else "fail",
+                detail=result.detail,
+            )
 
     def _draft_to_job(
         self,
@@ -800,7 +889,7 @@ class TelegramAdminBot:
     def _send_accounts_menu(self, chat_id: int) -> None:
         self._safe_send_message(
             chat_id,
-            "Меню аккаунтов",
+            "🔗 Аккаунты",
             reply_markup=self._keyboard(
                 [
                     [("📚 Список аккаунтов", "acct|list"), ("➕ Добавить", "acct|add")],
@@ -869,9 +958,9 @@ class TelegramAdminBot:
 
     def _send_content_menu(self, chat_id: int, platform: str, row) -> None:
         text = (
-            f"{self._platform_label(platform)}\n"
+            f"📣 {self._platform_label(platform)}\n"
             f"Аккаунт: {row['name']} ({row['destination']})\n"
-            "Выберите, что отправить:"
+            "Выберите формат публикации:"
         )
         self._safe_send_message(
             chat_id,
@@ -918,12 +1007,12 @@ class TelegramAdminBot:
         account_name = row["name"] if row else f"#{draft.account_id}"
         return "\n".join(
             [
-                "Черновик поста готов.",
+                "✅ Черновик поста готов",
                 f"Соцсеть: {self._platform_label(draft.platform or '-')}",
                 f"Аккаунт: {account_name}",
-                f"Тип: {draft.content_kind or '-'}",
+                f"Формат: {draft.content_kind or '-'}",
                 f"Текст: {draft.text or '(без текста)'}",
-                f"Медиа: {len(draft.media_items)}",
+                f"Медиафайлов: {len(draft.media_items)}",
             ]
         )
 
@@ -978,6 +1067,22 @@ class TelegramAdminBot:
                 for row in rows
             ]
         }
+
+    def _reply_keyboard(self, rows: list[list[Any]], *, one_time_keyboard: bool = False) -> dict[str, Any]:
+        payload = {
+            "keyboard": [
+                [
+                    item if isinstance(item, dict) else {"text": item}
+                    for item in row
+                ]
+                for row in rows
+            ],
+            "resize_keyboard": True,
+            "is_persistent": True,
+        }
+        if one_time_keyboard:
+            payload["one_time_keyboard"] = True
+        return payload
 
     def _update_account_token(self, account_id: int, row, token: str, received_at: datetime, chat_id: int) -> str:
         platform = row["platform"]
@@ -1078,11 +1183,7 @@ class TelegramAdminBot:
         print(f"[admin-bot] answerCallbackQuery failed: {last_error}")
 
     def _is_allowed(self, user_id: int | None) -> bool:
-        if user_id is None:
-            return False
-        if not self.settings.telegram_admin_user_ids:
-            return True
-        return user_id in self.settings.telegram_admin_user_ids
+        return user_id is not None
 
     def _ensure_current_user(self, chat_id: int, user_payload: dict[str, Any]) -> int:
         telegram_user_id = int(user_payload.get("id", 0))
@@ -1106,6 +1207,10 @@ class TelegramAdminBot:
         if owner_user_id is None:
             raise ValueError("Пользователь не инициализирован. Откройте /start ещё раз.")
         return owner_user_id
+
+    def _require_admin(self, chat_id: int) -> None:
+        if not self._is_admin_user(self._current_user_id(chat_id)):
+            raise ValueError("Это действие доступно только администратору платформы.")
 
     def _is_admin_user(self, user_id: int) -> bool:
         user = self.db.get_user(user_id)
@@ -1159,19 +1264,27 @@ class TelegramAdminBot:
         if referrer_user_id == referred_user_id:
             return "🤝 Нельзя активировать собственный реферальный код."
 
+        referral_summary = self.db.get_referral_summary(referrer_user_id)
+        invited_count = int(referral_summary["invited_count"])
+        referrer_reward = REFERRAL_REWARD_REFERRER + invited_count * REFERRAL_REWARD_STEP
+
         self.db.create_referral_event(
             referrer_user_id=referrer_user_id,
             referred_user_id=referred_user_id,
             code=code,
             status="registered",
-            reward_amount=REFERRAL_REWARD_REFERRER + REFERRAL_REWARD_REFERRED,
+            reward_amount=referrer_reward,
             metadata={"source": "telegram_start_payload"},
         )
         self.db.add_credit_transaction(
             referrer_user_id,
-            REFERRAL_REWARD_REFERRER,
+            referrer_reward,
             "referral_reward_referrer",
-            {"code": code, "referred_user_id": referred_user_id},
+            {
+                "code": code,
+                "referred_user_id": referred_user_id,
+                "referral_number": invited_count + 1,
+            },
         )
         self.db.add_credit_transaction(
             referred_user_id,
@@ -1184,7 +1297,7 @@ class TelegramAdminBot:
             "🤝 Реферальный код активирован.\n"
             f"Вас пригласил: {referrer_name}\n"
             f"Вам начислено: {REFERRAL_REWARD_REFERRED} кредитов.\n"
-            f"Партнёру начислено: {REFERRAL_REWARD_REFERRER} кредитов."
+            f"Партнёру начислено: {referrer_reward} кредитов."
         )
 
     def _accounts_for_platform(self, platform: str, chat_id: int) -> list:
@@ -1294,6 +1407,7 @@ class TelegramAdminBot:
             f"Текущий тариф: {plan_name}",
             f"Подписка до: {expires_at}",
             f"Баланс кредитов: {'∞ (admin)' if self._is_admin_user(user_id) else user['credit_balance']}",
+            f"Режим: {'admin без ограничений' if self._is_admin_user(user_id) else 'обычный пользователь'}",
             "",
             "Последние операции:",
         ]
@@ -1303,8 +1417,39 @@ class TelegramAdminBot:
             for row in history:
                 lines.append(self._format_credit_ledger_row(row))
         lines.append("")
+        lines.append("Пополнение баланса доступно через YooKassa.")
         lines.append("Смена тарифа сейчас работает в тестовом режиме без реальной оплаты.")
         return "\n".join(lines)
+
+    def _create_yookassa_topup(self, chat_id: int, package_key: str) -> str:
+        package_value = YOOKASSA_TOPUP_PACKAGES.get(package_key)
+        if package_value is None:
+            return "Неизвестный пакет пополнения."
+        user_id = self._current_user_id(chat_id)
+        description = f"Пополнение баланса на {package_value} кредитов"
+        try:
+            payment = self._create_yookassa_payment(
+                user_id=user_id,
+                amount_rub=package_value,
+                credits_amount=package_value,
+                description=description,
+            )
+        except Exception as exc:
+            return f"Не удалось создать платёж: {exc}"
+        confirmation = payment.get("confirmation") or {}
+        confirmation_url = confirmation.get("confirmation_url")
+        if not confirmation_url:
+            return "Платёж создан, но ссылка для оплаты не получена."
+        self._send_billing_menu(chat_id)
+        return "\n".join(
+            [
+                "✅ Платёж создан.",
+                f"Сумма: {package_value} ₽",
+                f"Кредиты после оплаты: {package_value}",
+                f"Ссылка на оплату: {confirmation_url}",
+                "После успешной оплаты админы получат уведомление автоматически.",
+            ]
+        )
 
     def _credit_history_text(self, user_id: int) -> str:
         history = self.db.list_credit_ledger(user_id, limit=20)
@@ -1484,6 +1629,14 @@ class TelegramAdminBot:
         user = self.db.get_user(user_id)
         if not user:
             return "🧩 Допы пока недоступны."
+        if self._is_admin_user(user_id):
+            return "\n".join(
+                [
+                    "🧩 Дополнительные возможности",
+                    "👑 Для admin доп. покупки не требуются.",
+                    "Лимиты на аккаунты и посты отключены, кредиты не списываются.",
+                ]
+            )
         features, plan = self._plan_features(user_id)
         post_price = int(features.get("extra_post_price_rub", 35))
         account_price = int(features.get("extra_account_price_rub", 350))
@@ -1564,16 +1717,17 @@ class TelegramAdminBot:
         base = user["username"] or user["full_name"] or f"user{user_id}"
         code = self.db.get_or_create_referral_code(user_id, base)
         summary = self.db.get_referral_summary(user_id)
+        next_reward = REFERRAL_REWARD_REFERRER + int(summary["invited_count"]) * REFERRAL_REWARD_STEP
         return "\n".join(
             [
                 "🤝 Партнёрская программа",
                 f"Ваш код: {code}",
                 f"Реферальная ссылка: https://t.me/{self._bot_username_guess()}?start=ref_{code}",
+                f"Бонус за следующего приглашённого: {next_reward} кредитов",
+                f"Бонус другу: {REFERRAL_REWARD_REFERRED} кредитов после активации кода",
                 "",
                 f"Приглашено: {summary['invited_count']}",
                 f"Начислено вознаграждений: {summary['total_rewards']}",
-                "",
-                "Следующий шаг: подключим обработку /start ref_CODE и автозачёт бонусов.",
             ]
         )
 
@@ -1867,3 +2021,1443 @@ class TelegramAdminBot:
 
     def _reset_session(self, chat_id: int) -> None:
         self.sessions.pop(chat_id, None)
+
+    def _is_registered_current_user(self, chat_id: int) -> bool:
+        user = self.db.get_user(self._current_user_id(chat_id))
+        return bool(user and int(user["is_registered"]))
+
+    def _send_welcome_menu(self, chat_id: int) -> None:
+        self._safe_send_message(
+            chat_id,
+            "\n".join(
+                [
+                    "👋 Добро пожаловать в Автопостер",
+                    "",
+                    "Ниже появилось простое меню для старта.",
+                    "Сначала можно посмотреть FAQ и завершить регистрацию.",
+                ]
+            ),
+            reply_markup=self._reply_keyboard(
+                [
+                    [WELCOME_BUTTON_FAQ],
+                    [{"text": WELCOME_BUTTON_REGISTER, "request_contact": True}],
+                ],
+                one_time_keyboard=True,
+            ),
+            ui=True,
+        )
+
+    def _send_faq_menu(self, chat_id: int) -> None:
+        self._safe_send_message(
+            chat_id,
+            "\n".join(
+                [
+                    "❓ FAQ",
+                    "",
+                    "Что умеет бот:",
+                    "• постить в Telegram, VK, Instagram и TikTok",
+                    "• делать отложенные публикации",
+                    "• хранить аккаунты, историю действий и уведомления",
+                    "",
+                    "Как это работает:",
+                    "• подключаете аккаунты",
+                    "• собираете пост",
+                    "• отправляете сразу или позже",
+                    "",
+                    "После регистрации откроется полный интерфейс.",
+                ]
+            ),
+            reply_markup=self._keyboard(
+                [
+                    [("✅ Регистрация", "welcome|register")],
+                    [("⬅️ Назад", "welcome|back")],
+                ]
+            ),
+            ui=True,
+        )
+
+    def _complete_registration(self, chat_id: int) -> str | None:
+        user_id = self._current_user_id(chat_id)
+        user = self.db.get_user(user_id)
+        if not user:
+            return "Не удалось загрузить профиль пользователя."
+        if int(user["is_registered"]):
+            self._send_main_menu(chat_id)
+            return None
+        display_name = user["full_name"] or user["username"] or f"user-{user['telegram_user_id']}"
+        self.db.complete_user_registration(user_id, full_name=display_name)
+        self._reset_session(chat_id)
+        self._send_main_menu(chat_id)
+        return f"✅ Регистрация завершена. Добро пожаловать, {display_name}."
+
+    def _dispatch_welcome_callback(self, chat_id: int, data: str) -> str | None:
+        parts = data.split("|")
+        if parts[:2] == ["welcome", "faq"]:
+            self._send_faq_menu(chat_id)
+            return None
+        if parts[:2] == ["welcome", "back"]:
+            self._send_welcome_menu(chat_id)
+            return None
+        if parts[:2] == ["welcome", "register"]:
+            return self._complete_registration(chat_id)
+        self._send_welcome_menu(chat_id)
+        return None
+
+    def _handle_welcome_reply_keyboard_text(self, chat_id: int, text: str) -> bool:
+        if text == WELCOME_BUTTON_FAQ:
+            self._send_faq_menu(chat_id)
+            return True
+        if text == WELCOME_BUTTON_REGISTER:
+            reply = self._complete_registration(chat_id)
+            if reply:
+                self._safe_send_message(chat_id, reply)
+            return True
+        return False
+
+    def _handle_main_reply_keyboard_text(self, chat_id: int, text: str) -> bool:
+        session = self.sessions.get(chat_id)
+        if session:
+            return False
+        if text == MENU_BUTTON_POST:
+            self._start_post_flow(chat_id)
+            return True
+        if text == MENU_BUTTON_ACCOUNTS:
+            self._send_accounts_menu(chat_id)
+            return True
+        if text == MENU_BUTTON_PROFILE:
+            self._send_profile_menu(chat_id)
+            return True
+        if text == MENU_BUTTON_PLANS:
+            self._send_plans_menu(chat_id)
+            return True
+        if text == MENU_BUTTON_BILLING:
+            self._send_billing_menu(chat_id)
+            return True
+        if text == MENU_BUTTON_ADDONS:
+            self._send_addons_menu(chat_id)
+            return True
+        if text == MENU_BUTTON_PARTNER:
+            self._send_partner_menu(chat_id)
+            return True
+        if text == MENU_BUTTON_NOTIFICATIONS:
+            self._send_notifications_menu(chat_id)
+            return True
+        if text == MENU_BUTTON_ACTIVITY:
+            self._send_activity_menu(chat_id)
+            return True
+        if text == MENU_BUTTON_RUN_DUE:
+            self._require_admin(chat_id)
+            processed = process_due_db_jobs(self.service, self.db, dry_run=False)
+            self._safe_send_message(chat_id, f"Обработано отложенных постов: {len(processed)}")
+            return True
+        return False
+
+    def _ensure_platform_role(self, telegram_user_id: int, user_id: int) -> None:
+        if telegram_user_id in PLATFORM_ADMIN_IDS:
+            user = self.db.get_user(user_id)
+            if user and user["role"] != "admin":
+                self.db.set_user_role(user_id, "admin")
+            self.db.complete_user_registration(user_id)
+
+    def _handle_callback_query(self, callback_query: dict) -> None:
+        callback_id = callback_query["id"]
+        message = callback_query.get("message") or {}
+        chat = message.get("chat") or {}
+        chat_id = int(chat.get("id", 0))
+        message_id = message.get("message_id")
+        user_id = callback_query.get("from", {}).get("id")
+        data = callback_query.get("data", "")
+        print(f"[admin-bot] callback from user_id={user_id} chat_id={chat_id} data={data!r}")
+
+        if chat_id and message_id:
+            self.ui_edit_targets[chat_id] = int(message_id)
+        self._answer_callback_query(callback_id)
+        if not self._is_allowed(user_id):
+            reply = "Доступ запрещён."
+        else:
+            self._ensure_current_user(chat_id, callback_query.get("from") or {})
+            if not self._is_registered_current_user(chat_id):
+                try:
+                    reply = self._dispatch_welcome_callback(chat_id, data)
+                except Exception as exc:
+                    reply = f"Ошибка: {exc}"
+            else:
+                try:
+                    reply = self._dispatch_callback(chat_id, data)
+                except Exception as exc:
+                    reply = f"Ошибка: {exc}"
+        print(f"[admin-bot] reply for chat_id={chat_id}: {reply}")
+        if reply:
+            self._safe_send_message(chat_id, reply)
+
+    def _notifications_button_label(self, chat_id: int) -> str:
+        try:
+            unread = self.db.count_unread_notifications(self._current_user_id(chat_id))
+        except Exception:
+            unread = 0
+        return f"🔔 Уведомления ({unread})" if unread else "🔔 Уведомления"
+
+    def _notifications_text(self, user_id: int) -> str:
+        rows = self.db.list_notifications(user_id, limit=15)
+        lines = ["🔔 Уведомления"]
+        if not rows:
+            lines.append("Пока новых уведомлений нет.")
+            return "\n".join(lines)
+        for row in rows:
+            created_at = str(row["created_at"]).replace("T", " ")[:16]
+            marker = "🆕 " if not int(row["is_read"]) else ""
+            lines.extend(
+                [
+                    "",
+                    f"{marker}{created_at} | {row['title']}",
+                    str(row["body"]),
+                ]
+            )
+        return "\n".join(lines)
+
+    def _activity_text(self, user_id: int) -> str:
+        rows = self.db.list_publish_events(user_id, limit=20)
+        lines = ["📜 История действий"]
+        if not rows:
+            lines.append("Пока публикаций нет.")
+            return "\n".join(lines)
+        for row in rows:
+            created_at = str(row["created_at"]).replace("T", " ")[:16]
+            status = "OK" if str(row["status"]).lower() == "ok" else "FAIL"
+            destination = row["destination"] or "-"
+            lines.append(f"{created_at} | {status} | {row['platform']} -> {destination}")
+            detail = str(row["detail"] or "").strip()
+            if detail:
+                lines.append(f"• {detail[:180]}")
+        return "\n".join(lines)
+
+    def _send_main_menu(self, chat_id: int) -> None:
+        rows: list[list[tuple[str, str]]] = [
+            [("📝 Создать пост", "menu|post"), ("🔗 Аккаунты", "menu|accounts")],
+            [("👤 Профиль", "menu|profile"), ("📘 Инструкция", "menu|guide")],
+            [("💼 Тарифы", "menu|plans"), ("💳 Биллинг", "menu|billing")],
+            [("🧩 Допы", "menu|addons"), ("🤝 Партнёрка", "menu|partner")],
+            [("🔔 Уведомления", "menu|notifications"), ("📜 История действий", "menu|activity")],
+        ]
+        if self._is_admin_user(self._current_user_id(chat_id)):
+            rows.append([("⏰ Запустить отложенные", "menu|run_due"), ("🛠 Управление БД", "menu|admin")])
+        else:
+            rows.append([("⏰ Запустить отложенные", "menu|run_due")])
+        self._safe_send_message(
+            chat_id,
+            "Главное меню. Кнопки теперь закреплены прямо под сообщением.",
+            reply_markup=self._keyboard(rows),
+            ui=True,
+        )
+
+    def _send_profile_menu(self, chat_id: int) -> None:
+        self._safe_send_message(
+            chat_id,
+            self._profile_text(chat_id),
+            reply_markup=self._keyboard(
+                [
+                    [("💼 Тарифы", "menu|plans"), ("🔗 Аккаунты", "menu|accounts")],
+                    [("💳 Биллинг", "menu|billing"), ("🧩 Допы", "menu|addons")],
+                    [("🤝 Партнёрка", "menu|partner"), (self._notifications_button_label(chat_id), "menu|notifications")],
+                    [("📜 История действий", "menu|activity"), ("📝 Создать пост", "menu|post")],
+                    [("⬅️ Назад", "menu|main")],
+                ]
+            ),
+            ui=True,
+        )
+
+    def _send_plans_menu(self, chat_id: int) -> None:
+        self._safe_send_message(
+            chat_id,
+            self._plans_text(chat_id),
+            reply_markup=self._keyboard(
+                [
+                    [("💳 Биллинг", "menu|billing"), ("🧩 Допы", "menu|addons")],
+                    [("👤 Профиль", "menu|profile")],
+                    [("⬅️ Назад", "menu|main")],
+                ]
+            ),
+            ui=True,
+        )
+
+    def _send_billing_menu(self, chat_id: int) -> None:
+        self._safe_send_message(
+            chat_id,
+            self._billing_text(chat_id),
+            reply_markup=self._keyboard(
+                [
+                    [("🔁 Сменить тариф", "bill|plans"), ("📜 История", "bill|history")],
+                    [("💳 Пополнить 500 ₽", "bill|topup|500"), ("💳 Пополнить 1000 ₽", "bill|topup|1000")],
+                    [("💳 Пополнить 2500 ₽", "bill|topup|2500")],
+                    [("🧩 Допы", "menu|addons"), ("👤 Профиль", "menu|profile")],
+                    [("⬅️ Назад", "menu|main")],
+                ]
+            ),
+            ui=True,
+        )
+
+    def _send_plan_switch_menu(self, chat_id: int) -> None:
+        rows: list[list[tuple[str, str]]] = []
+        current = self.db.get_active_subscription(self._current_user_id(chat_id))
+        current_code = current["plan_code"] if current else None
+        for plan in self.db.list_plans():
+            label = f"{self._plan_emoji(plan['code'])} {plan['name']}"
+            if plan["code"] == current_code:
+                label = f"{label} ✅"
+            rows.append([(label[:30], f"bill|switch|{plan['code']}")])
+        rows.append([("💳 Назад в биллинг", "menu|billing")])
+        self._safe_send_message(chat_id, "💳 Выберите тариф для переключения", reply_markup=self._keyboard(rows), ui=True)
+
+    def _send_credit_history_menu(self, chat_id: int) -> None:
+        self._safe_send_message(
+            chat_id,
+            self._credit_history_text(self._current_user_id(chat_id)),
+            reply_markup=self._keyboard(
+                [
+                    [("💳 Назад в биллинг", "menu|billing")],
+                    [("⬅️ Назад", "menu|main")],
+                ]
+            ),
+            ui=True,
+        )
+
+    def _send_addons_menu(self, chat_id: int) -> None:
+        self._safe_send_message(
+            chat_id,
+            self._addons_text(chat_id),
+            reply_markup=self._keyboard(
+                [
+                    [("📝 Купить +1 пост", "addons|buy|post")],
+                    [("🔗 +1 Telegram", "addons|buy|account|telegram"), ("🔗 +1 VK", "addons|buy|account|vk")],
+                    [("🔗 +1 Instagram", "addons|buy|account|instagram"), ("🔗 +1 TikTok", "addons|buy|account|tiktok")],
+                    [("👤 Профиль", "menu|profile"), ("⬅️ Назад", "menu|main")],
+                ]
+            ),
+            ui=True,
+        )
+
+    def _send_partner_menu(self, chat_id: int) -> None:
+        self._safe_send_message(
+            chat_id,
+            self._partner_text(chat_id),
+            reply_markup=self._keyboard(
+                [
+                    [("👤 Профиль", "menu|profile"), (self._notifications_button_label(chat_id), "menu|notifications")],
+                    [("⬅️ Назад", "menu|main")],
+                ]
+            ),
+            ui=True,
+        )
+
+    def _send_notifications_menu(self, chat_id: int) -> None:
+        user_id = self._current_user_id(chat_id)
+        self.db.mark_notifications_read(user_id)
+        self._safe_send_message(
+            chat_id,
+            self._notifications_text(user_id),
+            reply_markup=self._keyboard(
+                [
+                    [("🔄 Обновить", "menu|notifications"), ("📜 История действий", "menu|activity")],
+                    [("⬅️ Назад", "menu|main")],
+                ]
+            ),
+            ui=True,
+        )
+
+    def _send_activity_menu(self, chat_id: int) -> None:
+        self._safe_send_message(
+            chat_id,
+            self._activity_text(self._current_user_id(chat_id)),
+            reply_markup=self._keyboard(
+                [
+                    [("🔄 Обновить", "menu|activity"), (self._notifications_button_label(chat_id), "menu|notifications")],
+                    [("⬅️ Назад", "menu|main")],
+                ]
+            ),
+            ui=True,
+        )
+
+    def _send_accounts_menu(self, chat_id: int) -> None:
+        self._safe_send_message(
+            chat_id,
+            "🔗 Аккаунты",
+            reply_markup=self._keyboard(
+                [
+                    [("📚 Список аккаунтов", "acct|list"), ("➕ Добавить", "acct|add")],
+                    [("✏️ Изменить", "acct|edit"), ("🗑️ Удалить", "acct|delete")],
+                    [("⬅️ Назад", "menu|main")],
+                ]
+            ),
+            ui=True,
+        )
+
+    def _send_platform_choice_menu(self, chat_id: int, prefix: str) -> None:
+        self._safe_send_message(
+            chat_id,
+            "Выберите соцсеть",
+            reply_markup=self._keyboard(
+                [
+                    [("Telegram", f"{prefix}|telegram"), ("VK", f"{prefix}|vk")],
+                    [("Instagram", f"{prefix}|instagram"), ("TikTok", f"{prefix}|tiktok")],
+                    [("Назад", "menu|accounts")],
+                ]
+            ),
+            ui=True,
+        )
+
+    def _send_account_picker(self, chat_id: int, prefix: str, title: str) -> None:
+        rows: list[list[tuple[str, str]]] = []
+        for row in self.db.list_accounts(owner_user_id=self._current_user_id(chat_id)):
+            rows.append([(f"{row['id']}: {row['platform']} / {row['name']}"[:30], f"{prefix}|{row['id']}")])
+        rows.append([("Назад", "menu|accounts")])
+        self._safe_send_message(chat_id, title, reply_markup=self._keyboard(rows), ui=True)
+
+    def _send_account_edit_menu(self, chat_id: int, row) -> None:
+        account_id = int(row["id"])
+        text = self._account_details_text(row)
+        buttons = [
+            [("Изменить название", f"acct|edit|{account_id}|name")],
+            [("Изменить destination", f"acct|edit|{account_id}|destination")],
+        ]
+        if self._account_supports_token_edit(row):
+            buttons.append([("Обновить access token", f"acct|edit|{account_id}|access_token")])
+        buttons.append([("Назад", "menu|accounts")])
+        self._safe_send_message(chat_id, text, reply_markup=self._keyboard(buttons), ui=True)
+
+    def _start_post_flow(self, chat_id: int) -> None:
+        self.sessions[chat_id] = {"flow": "post", "draft": PostDraft()}
+        self._safe_send_message(
+            chat_id,
+            "Соцсети",
+            reply_markup=self._keyboard(
+                [
+                    [("Telegram", "post|platform|telegram"), ("VK", "post|platform|vk")],
+                    [("Instagram", "post|platform|instagram"), ("TikTok", "post|platform|tiktok")],
+                    [("Назад", "menu|main")],
+                ]
+            ),
+            ui=True,
+        )
+
+    def _send_platform_account_picker(self, chat_id: int, platform: str) -> None:
+        rows: list[list[tuple[str, str]]] = []
+        for row in self._accounts_for_platform(platform, chat_id):
+            rows.append([(f"{row['id']}: {row['name']}"[:30], f"post|account|{row['id']}")])
+        rows.append([("Назад", "post|back_socials")])
+        self._safe_send_message(
+            chat_id,
+            f"Аккаунты {self._platform_label(platform)}",
+            reply_markup=self._keyboard(rows),
+            ui=True,
+        )
+
+    def _send_content_menu(self, chat_id: int, platform: str, row) -> None:
+        text = (
+            f"{self._platform_label(platform)}\n"
+            f"Аккаунт: {row['name']} ({row['destination']})\n"
+            "Выберите формат публикации:"
+        )
+        self._safe_send_message(
+            chat_id,
+            text,
+            reply_markup=self._keyboard(
+                [
+                    [("Текст", "post|type|text"), ("Фото", "post|type|photo"), ("Видео", "post|type|video")],
+                    [("Назад", "post|back_socials")],
+                ]
+            ),
+            ui=True,
+        )
+
+    def _send_media_collection_menu(self, chat_id: int, draft: PostDraft) -> None:
+        text = f"Собрано медиа: {len(draft.media_items)}\n"
+        text += f"Подпись: {draft.text[:100]}" if draft.text else "Подписи пока нет."
+        self._safe_send_message(
+            chat_id,
+            text,
+            reply_markup=self._keyboard(
+                [
+                    [("Добавить текст", "post|add_text"), ("Готово", "post|done")],
+                    [("Отмена", "post|cancel")],
+                ]
+            ),
+            ui=True,
+        )
+
+    def _send_ready_menu(self, chat_id: int, draft: PostDraft) -> None:
+        self._safe_send_message(
+            chat_id,
+            self._draft_summary(draft, owner_user_id=self._current_user_id(chat_id)),
+            reply_markup=self._keyboard(
+                [
+                    [("Отправить сейчас", "post|send_now"), ("Отправить позже", "post|send_later")],
+                    [("Отмена", "post|cancel")],
+                ]
+            ),
+            ui=True,
+        )
+
+    def _dispatch_billing_callback(self, chat_id: int, parts: list[str]) -> str:
+        if len(parts) < 2:
+            return "Неизвестное действие в биллинге."
+        action = parts[1]
+        if action == "open":
+            self._send_billing_menu(chat_id)
+            return None
+        if action == "plans":
+            self._send_plan_switch_menu(chat_id)
+            return None
+        if action == "history":
+            self._send_credit_history_menu(chat_id)
+            return None
+        if action == "topup" and len(parts) >= 3:
+            return self._create_yookassa_topup(chat_id, parts[2])
+        if action == "switch" and len(parts) >= 3:
+            return self._switch_plan(chat_id, parts[2])
+        return "Неизвестное действие в биллинге."
+
+    def _notification_target_users(self) -> list[int]:
+        admins = [int(row["id"]) for row in self.db.list_users_by_role("admin")]
+        if admins:
+            return admins
+        if self.settings.telegram_admin_user_ids:
+            result: list[int] = []
+            for telegram_user_id in self.settings.telegram_admin_user_ids:
+                user = self.db.get_user_by_telegram_id(int(telegram_user_id))
+                if user:
+                    result.append(int(user["id"]))
+            return result
+        return []
+
+    def _maybe_send_token_warnings(self) -> None:
+        now = time.time()
+        if now - self.last_warning_check_at < 60:
+            return
+        self.last_warning_check_at = now
+        self.last_vk_warning_key = self._process_warning(
+            kind="vk_token_expiry",
+            title="VK token скоро истечёт",
+            message=build_vk_token_warning_message(self.settings, warning_hours=1),
+            previous_key=self.last_vk_warning_key,
+            expires_at=self.settings.vk_token_expires_at,
+        )
+        self.last_instagram_warning_key = self._process_warning(
+            kind="instagram_token_expiry",
+            title="Instagram token скоро истечёт",
+            message=build_instagram_token_warning_message(self.settings, warning_hours=24),
+            previous_key=self.last_instagram_warning_key,
+            expires_at=self.settings.instagram_token_expires_at,
+        )
+
+    def _maybe_process_due_jobs(self) -> None:
+        now = time.time()
+        if now - self.last_due_jobs_check_at < 30:
+            return
+        self.last_due_jobs_check_at = now
+        processed = process_due_db_jobs(self.service, self.db, dry_run=False)
+        if not processed:
+            return
+        for user_id in self._notification_target_users():
+            self.db.add_notification(
+                user_id,
+                kind="scheduled_posts_processed",
+                title="Отложенные посты обработаны",
+                body=f"Опубликованы задания: {', '.join(processed)}",
+            )
+
+    def _process_warning(
+        self,
+        *,
+        kind: str,
+        title: str,
+        message: str | None,
+        previous_key: str | None,
+        expires_at: str | None,
+    ) -> str | None:
+        if not message:
+            return None
+        warning_key = f"{expires_at}|{message}"
+        if previous_key == warning_key:
+            return previous_key
+        dedupe_key = f"{kind}:{expires_at}"
+        for user_id in self._notification_target_users():
+            self.db.add_notification(
+                user_id,
+                kind=kind,
+                title=title,
+                body=message,
+                dedupe_key=dedupe_key,
+            )
+        return warning_key
+
+    def _delete_message(self, chat_id: int | str, message_id: int) -> None:
+        try:
+            self.http.post(
+                f"{self.base_url}/deleteMessage",
+                data={"chat_id": str(chat_id), "message_id": str(message_id)},
+                timeout=(10, 30),
+            )
+        except Exception:
+            return
+
+    def _edit_message(
+        self,
+        chat_id: int | str,
+        message_id: int,
+        text: str,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> bool:
+        payload = {
+            "chat_id": str(chat_id),
+            "message_id": str(message_id),
+            "text": text[:4000],
+        }
+        if reply_markup is not None:
+            payload["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
+        last_error: Exception | None = None
+        for attempt in range(1, 3):
+            try:
+                response = self.http.post(
+                    f"{self.base_url}/editMessageText",
+                    data=payload,
+                    timeout=(15, 60),
+                )
+                data = response.json()
+                if data.get("ok"):
+                    return True
+                description = str(data.get("description") or "")
+                if "message is not modified" in description.lower():
+                    return True
+                raise RuntimeError(description or "editMessageText failed")
+            except Exception as exc:
+                last_error = exc
+                time.sleep(attempt)
+        print(f"[admin-bot] editMessageText failed for chat_id={chat_id} message_id={message_id}: {last_error}")
+        return False
+
+    def _safe_delete_previous_ui(self, chat_id: int | str) -> None:
+        if not isinstance(chat_id, int):
+            return
+        previous_message_id = self.ui_message_ids.pop(chat_id, None)
+        if previous_message_id:
+            self._delete_message(chat_id, previous_message_id)
+
+    def _safe_send_message(
+        self,
+        chat_id: int | str,
+        text: str,
+        reply_markup: dict[str, Any] | None = None,
+        *,
+        ui: bool = False,
+    ) -> int | None:
+        if ui and isinstance(chat_id, int):
+            target_message_id = self.ui_edit_targets.pop(chat_id, None)
+            if target_message_id and self._edit_message(chat_id, target_message_id, text, reply_markup):
+                self.ui_message_ids[chat_id] = target_message_id
+                return target_message_id
+            self._safe_delete_previous_ui(chat_id)
+        payload = {"chat_id": str(chat_id), "text": text[:4000]}
+        if reply_markup is not None:
+            payload["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
+        last_error: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                response = self.http.post(
+                    f"{self.base_url}/sendMessage",
+                    data=payload,
+                    timeout=(20, 180),
+                )
+                data = response.json()
+                if not data.get("ok"):
+                    raise RuntimeError(data.get("description") or "Telegram sendMessage failed")
+                message_id = data.get("result", {}).get("message_id")
+                if ui and isinstance(chat_id, int) and message_id is not None:
+                    self.ui_message_ids[chat_id] = int(message_id)
+                return int(message_id) if message_id is not None else None
+            except Exception as exc:
+                last_error = exc
+                time.sleep(attempt)
+        print(f"[admin-bot] sendMessage failed for chat_id={chat_id}: {last_error}")
+        return None
+
+    def _safe_send_document(
+        self,
+        chat_id: int | str,
+        filename: str,
+        content: str,
+        *,
+        caption: str | None = None,
+    ) -> bool:
+        payload = {"chat_id": str(chat_id)}
+        if caption:
+            payload["caption"] = caption[:1024]
+        files = {
+            "document": (
+                filename,
+                content.encode("utf-8-sig"),
+                "text/csv; charset=utf-8",
+            )
+        }
+        last_error: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                response = self.http.post(
+                    f"{self.base_url}/sendDocument",
+                    data=payload,
+                    files=files,
+                    timeout=(20, 180),
+                )
+                data = response.json()
+                if not data.get("ok"):
+                    raise RuntimeError(data.get("description") or "Telegram sendDocument failed")
+                return True
+            except Exception as exc:
+                last_error = exc
+                time.sleep(attempt)
+        print(f"[admin-bot] sendDocument failed for chat_id={chat_id}: {last_error}")
+        return False
+
+    def _is_yookassa_enabled(self) -> bool:
+        return bool(self.settings.yookassa_shop_id and self.settings.yookassa_secret_key)
+
+    def _create_yookassa_payment(
+        self,
+        *,
+        user_id: int,
+        amount_rub: int,
+        credits_amount: int,
+        description: str,
+    ) -> dict[str, Any]:
+        if not self._is_yookassa_enabled():
+            raise ValueError("YooKassa не настроена. Заполните YOOKASSA_SHOP_ID и YOOKASSA_SECRET_KEY.")
+        idempotence_key = f"pay_{user_id}_{int(time.time())}_{uuid4().hex}"
+        payload = {
+            "amount": {
+                "value": f"{amount_rub:.2f}",
+                "currency": self.settings.yookassa_currency,
+            },
+            "capture": True,
+            "confirmation": {
+                "type": "redirect",
+                "return_url": self.settings.yookassa_return_url or "https://t.me",
+            },
+            "description": description[:128],
+            "metadata": {
+                "user_id": user_id,
+                "credits_amount": credits_amount,
+                "amount_rub": amount_rub,
+                "test_mode": self.settings.yookassa_test_mode,
+            },
+        }
+        headers = {
+            "Idempotence-Key": idempotence_key,
+            "Content-Type": "application/json",
+        }
+        response = self.http.post(
+            "https://api.yookassa.ru/v3/payments",
+            auth=HTTPBasicAuth(self.settings.yookassa_shop_id, self.settings.yookassa_secret_key),
+            headers=headers,
+            json=payload,
+            timeout=(15, 60),
+        )
+        data = response.json()
+        if response.status_code >= 400 or "id" not in data:
+            raise RuntimeError(data.get("description") or f"YooKassa payment creation failed: {response.status_code}")
+        confirmation = data.get("confirmation") or {}
+        confirmation_url = confirmation.get("confirmation_url")
+        self.db.create_payment(
+            user_id=user_id,
+            provider=YOOKASSA_PROVIDER,
+            provider_payment_id=str(data["id"]),
+            status=str(data.get("status") or "pending"),
+            amount_rub=amount_rub,
+            credits_amount=credits_amount,
+            description=description,
+            confirmation_url=confirmation_url,
+            payload=data,
+        )
+        return data
+
+    def _yookassa_payment_status(self, provider_payment_id: str) -> dict[str, Any]:
+        if not self._is_yookassa_enabled():
+            raise ValueError("YooKassa не настроена.")
+        response = self.http.get(
+            f"https://api.yookassa.ru/v3/payments/{provider_payment_id}",
+            auth=HTTPBasicAuth(self.settings.yookassa_shop_id, self.settings.yookassa_secret_key),
+            timeout=(15, 60),
+        )
+        data = response.json()
+        if response.status_code >= 400 or "id" not in data:
+            raise RuntimeError(data.get("description") or f"YooKassa payment lookup failed: {response.status_code}")
+        return data
+
+    def _maybe_process_yookassa_payments(self) -> None:
+        now = time.time()
+        if now - self.last_payment_check_at < 30:
+            return
+        self.last_payment_check_at = now
+        pending = self.db.list_pending_payments(provider=YOOKASSA_PROVIDER)
+        if not pending:
+            return
+        for payment in pending:
+            provider_payment_id = str(payment["provider_payment_id"])
+            try:
+                data = self._yookassa_payment_status(provider_payment_id)
+            except Exception as exc:
+                print(f"[admin-bot] YooKassa check failed for {provider_payment_id}: {exc}")
+                continue
+            status = str(data.get("status") or payment["status"])
+            confirmation = data.get("confirmation") or {}
+            confirmation_url = confirmation.get("confirmation_url") or payment["confirmation_url"]
+            self.db.mark_payment_status(
+                YOOKASSA_PROVIDER,
+                provider_payment_id,
+                status=status,
+                payload=data,
+                confirmation_url=confirmation_url,
+            )
+            if status == "canceled":
+                self.db.mark_payment_status(
+                    YOOKASSA_PROVIDER,
+                    provider_payment_id,
+                    status=status,
+                    payload=data,
+                    confirmation_url=confirmation_url,
+                    processed_at=datetime.utcnow().isoformat(),
+                )
+                continue
+            if status != "succeeded":
+                continue
+            self._process_succeeded_payment(payment, data)
+
+    def _process_succeeded_payment(self, payment, data: dict[str, Any]) -> None:
+        if payment["processed_at"]:
+            return
+        user_id = int(payment["user_id"])
+        credits_amount = int(payment["credits_amount"])
+        amount_rub = int(payment["amount_rub"])
+        provider_payment_id = str(payment["provider_payment_id"])
+        self.db.add_credit_transaction(
+            user_id,
+            credits_amount,
+            "yookassa_topup",
+            {
+                "provider": YOOKASSA_PROVIDER,
+                "payment_id": provider_payment_id,
+                "amount_rub": amount_rub,
+                "credits_amount": credits_amount,
+            },
+        )
+        self.db.mark_payment_status(
+            YOOKASSA_PROVIDER,
+            provider_payment_id,
+            status="succeeded",
+            payload=data,
+            confirmation_url=(data.get("confirmation") or {}).get("confirmation_url") or payment["confirmation_url"],
+            processed_at=datetime.utcnow().isoformat(),
+            notified_at=datetime.utcnow().isoformat(),
+        )
+        self._notify_admins_about_payment(
+            user_id=user_id,
+            amount_rub=amount_rub,
+            credits_amount=credits_amount,
+            provider_payment_id=provider_payment_id,
+        )
+        self.db.add_notification(
+            user_id,
+            kind="payment_succeeded",
+            title="Платёж подтверждён",
+            body=(
+                f"Платёж на {amount_rub} ₽ подтверждён. "
+                f"На баланс зачислено {credits_amount} кредитов."
+            ),
+            dedupe_key=provider_payment_id,
+        )
+        user_chat_id = self._chat_id_for_user(user_id)
+        if user_chat_id is not None:
+            self._safe_send_message(
+                user_chat_id,
+                f"✅ Платёж {amount_rub} ₽ подтверждён. На баланс зачислено {credits_amount} кредитов.",
+            )
+
+    def _notify_admins_about_payment(
+        self,
+        *,
+        user_id: int,
+        amount_rub: int,
+        credits_amount: int,
+        provider_payment_id: str,
+    ) -> None:
+        user = self.db.get_user(user_id)
+        username = f"@{user['username']}" if user and user["username"] else "-"
+        full_name = user["full_name"] if user else "-"
+        text = "\n".join(
+            [
+                "💳 Новая оплата",
+                f"Пользователь: {full_name}",
+                f"Telegram ID: {user['telegram_user_id'] if user else '-'}",
+                f"Username: {username}",
+                f"Сумма: {amount_rub} ₽",
+                f"Начислено кредитов: {credits_amount}",
+                f"Платёж: {provider_payment_id}",
+            ]
+        )
+        for admin_user_id in self._notification_target_users():
+            self.db.add_notification(
+                admin_user_id,
+                kind="payment_succeeded",
+                title="Новая оплата",
+                body=text,
+                dedupe_key=f"{provider_payment_id}:{admin_user_id}",
+            )
+        for chat_id, mapped_user_id in self.chat_user_ids.items():
+            if not self._is_admin_user(mapped_user_id):
+                continue
+            try:
+                self._safe_send_message(chat_id, text)
+            except Exception:
+                continue
+
+    def _chat_id_for_user(self, user_id: int) -> int | None:
+        for chat_id, mapped_user_id in self.chat_user_ids.items():
+            if mapped_user_id == user_id:
+                return chat_id
+        return None
+
+    def _answer_callback_query(self, callback_id: str) -> None:
+        last_error: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                response = self.http.post(
+                    f"{self.base_url}/answerCallbackQuery",
+                    data={"callback_query_id": callback_id},
+                    timeout=(15, 60),
+                )
+                data = response.json()
+                if not data.get("ok"):
+                    raise RuntimeError(data.get("description") or "answerCallbackQuery failed")
+                return
+            except Exception as exc:
+                last_error = exc
+                time.sleep(attempt)
+        print(f"[admin-bot] answerCallbackQuery failed: {last_error}")
+
+    def _test_text_command(self, text: str, chat_id: int) -> str:
+        parts = text.split(maxsplit=2)
+        if len(parts) < 3:
+            raise ValueError("Формат: /test_text <account_id> <text>")
+        _, account_id_text, body = parts
+        account_id = int(account_id_text)
+        owner_user_id = self._current_user_id(chat_id)
+        job = self._build_test_job(
+            account_id=account_id,
+            text=body,
+            media_items=[],
+            owner_user_id=owner_user_id,
+        )
+        results = self.service.publish_job(job, dry_run=False)
+        self._log_publish_results(owner_user_id, results, external_post_id=job.post_id)
+        return self._format_results(results)
+
+    def _send_welcome_menu(self, chat_id: int) -> None:
+        self._safe_send_message(
+            chat_id,
+            "\n".join(
+                [
+                    "👋 Добро пожаловать в Автопостер",
+                    "",
+                    "Ниже появилось простое стартовое меню.",
+                    "Сначала можно посмотреть FAQ, а для регистрации нужно отправить свой контакт кнопкой ниже.",
+                ]
+            ),
+            reply_markup=self._reply_keyboard(
+                [
+                    [WELCOME_BUTTON_FAQ],
+                    [{"text": WELCOME_BUTTON_REGISTER, "request_contact": True}],
+                ],
+                one_time_keyboard=True,
+            ),
+            ui=True,
+        )
+
+    def _complete_registration(self, chat_id: int) -> str | None:
+        return "Для регистрации нажмите кнопку ниже и отправьте свой контакт."
+
+    def _complete_registration_from_contact(self, chat_id: int, phone_number: str) -> str | None:
+        user_id = self._current_user_id(chat_id)
+        user = self.db.get_user(user_id)
+        if not user:
+            return "Не удалось загрузить профиль пользователя."
+        if int(user["is_registered"]):
+            self._send_main_menu(chat_id)
+            return None
+        display_name = user["full_name"] or user["username"] or f"user-{user['telegram_user_id']}"
+        self.db.complete_user_registration(user_id, full_name=display_name, phone_number=phone_number)
+        self._reset_session(chat_id)
+        self._send_main_menu(chat_id)
+        return f"✅ Регистрация завершена. Добро пожаловать, {display_name}."
+
+    def _handle_welcome_contact(self, chat_id: int, message: dict[str, Any]) -> bool:
+        contact = message.get("contact")
+        if not contact:
+            return False
+        user = self.db.get_user(self._current_user_id(chat_id))
+        if not user:
+            return False
+        contact_user_id = contact.get("user_id")
+        if contact_user_id and int(contact_user_id) != int(user["telegram_user_id"]):
+            self._safe_send_message(chat_id, "Пожалуйста, отправьте именно свой контакт.")
+            return True
+        reply = self._complete_registration_from_contact(chat_id, str(contact.get("phone_number") or ""))
+        if reply:
+            self._safe_send_message(chat_id, reply)
+        return True
+
+    def _handle_welcome_reply_keyboard_text(self, chat_id: int, text: str) -> bool:
+        if text == WELCOME_BUTTON_FAQ:
+            self._send_faq_menu(chat_id)
+            return True
+        if text == WELCOME_BUTTON_REGISTER:
+            reply = self._complete_registration(chat_id)
+            if reply:
+                self._safe_send_message(chat_id, reply)
+            return True
+        return False
+
+    def _send_guide_menu(self, chat_id: int) -> None:
+        self._safe_send_message(
+            chat_id,
+            "\n".join(
+                [
+                    "📘 Инструкция по использованию",
+                    "",
+                    "1. Как подключить аккаунты",
+                    "• Telegram: откройте «Аккаунты» → «Добавить», выберите Telegram и укажите @канал или chat_id. Бот должен быть админом канала.",
+                    "• VK: выберите VK и укажите owner_id сообщества или страницы. Для публикации нужен рабочий VK token.",
+                    "• Instagram: выберите Instagram и укажите username. Для публикации должны быть настроены ig_user_id и access token.",
+                    "• TikTok: выберите TikTok и укажите username. Нужен access token и доступность upload-хостов.",
+                    "",
+                    "2. Как отправить пост",
+                    "• Нажмите «Создать пост»",
+                    "• Выберите соцсеть и аккаунт",
+                    "• Выберите формат: текст, фото или видео",
+                    "• Отправьте контент и подтвердите публикацию",
+                    "",
+                    "3. Как сделать отложенный пост",
+                    "• После подготовки черновика выберите «Отправить позже»",
+                    "• Укажите дату и время в формате YYYY-MM-DD HH:MM",
+                    "",
+                    "4. Полезные разделы",
+                    "• «Уведомления» — предупреждения по токенам и системные события",
+                    "• «История действий» — куда и когда уходили посты",
+                    "• «Биллинг» — тариф, кредиты и история операций",
+                ]
+            ),
+            ui=True,
+        )
+
+    def _handle_main_reply_keyboard_text(self, chat_id: int, text: str) -> bool:
+        session = self.sessions.get(chat_id)
+        if session:
+            return False
+        if text == MENU_BUTTON_POST:
+            self._start_post_flow(chat_id)
+            return True
+        if text == MENU_BUTTON_ACCOUNTS:
+            self._send_accounts_menu(chat_id)
+            return True
+        if text == MENU_BUTTON_PROFILE:
+            self._send_profile_menu(chat_id)
+            return True
+        if text == MENU_BUTTON_GUIDE:
+            self._send_guide_menu(chat_id)
+            return True
+        if text == MENU_BUTTON_PLANS:
+            self._send_plans_menu(chat_id)
+            return True
+        if text == MENU_BUTTON_BILLING:
+            self._send_billing_menu(chat_id)
+            return True
+        if text == MENU_BUTTON_ADDONS:
+            self._send_addons_menu(chat_id)
+            return True
+        if text == MENU_BUTTON_PARTNER:
+            self._send_partner_menu(chat_id)
+            return True
+        if text == MENU_BUTTON_NOTIFICATIONS:
+            self._send_notifications_menu(chat_id)
+            return True
+        if text == MENU_BUTTON_ACTIVITY:
+            self._send_activity_menu(chat_id)
+            return True
+        if text == MENU_BUTTON_RUN_DUE:
+            self._require_admin(chat_id)
+            processed = process_due_db_jobs(self.service, self.db, dry_run=False)
+            self._safe_send_message(chat_id, f"Обработано отложенных постов: {len(processed)}")
+            return True
+        return False
+
+    def _send_main_menu(self, chat_id: int) -> None:
+        rows: list[list[tuple[str, str]]] = [
+            [("📝 Создать пост", "menu|post"), ("🔗 Аккаунты", "menu|accounts")],
+            [("👤 Профиль", "menu|profile"), ("📘 Инструкция", "menu|guide")],
+            [("💼 Тарифы", "menu|plans"), ("💳 Биллинг", "menu|billing")],
+            [("🧩 Допы", "menu|addons"), ("🤝 Партнёрка", "menu|partner")],
+            [("🔔 Уведомления", "menu|notifications"), ("📜 История действий", "menu|activity")],
+        ]
+        if self._is_admin_user(self._current_user_id(chat_id)):
+            rows.append([("⏰ Запустить отложенные", "menu|run_due"), ("🛠 Управление БД", "menu|admin")])
+        else:
+            rows.append([("⏰ Запустить отложенные", "menu|run_due")])
+        self._safe_send_message(
+            chat_id,
+            "Главное меню. Кнопки теперь закреплены прямо под сообщением.",
+            reply_markup=self._keyboard(rows),
+            ui=True,
+        )
+
+    def _admin_users_text(self) -> str:
+        rows = self.db.list_users(limit=30)
+        lines = ["🛠 Пользователи в базе"]
+        if not rows:
+            lines.append("Пока пользователей нет.")
+            return "\n".join(lines)
+        for row in rows:
+            username = f"@{row['username']}" if row["username"] else "-"
+            status = "registered" if int(row["is_registered"]) else "new"
+            lines.append(
+                f"[{row['telegram_user_id']}] {row['role']} | {status} | {row['full_name']} | {username}"
+            )
+        return "\n".join(lines)
+
+    def _export_all_users_csv(self) -> str:
+        rows = self.db.list_all_users()
+        if not rows:
+            return ""
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(
+            [
+                "id",
+                "telegram_user_id",
+                "username",
+                "full_name",
+                "phone_number",
+                "role",
+                "is_registered",
+                "is_active",
+                "created_at",
+                "registered_at",
+                "credit_balance",
+                "referral_code",
+                "invited_count",
+                "total_rewards",
+            ]
+        )
+        for row in rows:
+            referral = self.db.get_referral_summary(int(row["id"]))
+            writer.writerow(
+                [
+                    row["id"],
+                    row["telegram_user_id"],
+                    row["username"],
+                    row["full_name"],
+                    row["phone_number"],
+                    row["role"],
+                    int(row["is_registered"]),
+                    int(row["is_active"]),
+                    row["created_at"],
+                    row["registered_at"],
+                    row["credit_balance"],
+                    referral["code"],
+                    int(referral["invited_count"]),
+                    int(referral["total_rewards"]),
+                ]
+            )
+        return buffer.getvalue()
+
+    def _admin_user_card_text(self, user) -> str:
+        user_id = int(user["id"])
+        telegram_user_id = int(user["telegram_user_id"])
+        credit_totals = self.db.get_credit_totals(user_id)
+        referral = self.db.get_referral_summary(user_id)
+        active_subscription = self.db.get_active_subscription(user_id)
+        account_total = self.db.count_accounts_for_user(user_id)
+        job_total = self.db.count_jobs_for_user(user_id)
+        publish_total = self.db.count_publish_events(user_id)
+        accounts_by_platform = {
+            platform: self.db.count_accounts_for_user(user_id, platform)
+            for platform in ("telegram", "vk", "instagram", "tiktok")
+        }
+
+        created_at = str(user["created_at"] or "-").replace("T", " ")[:19]
+        registered_at = str(user["registered_at"] or "-").replace("T", " ")[:19]
+        active_plan = "нет"
+        if active_subscription:
+            expires_at = str(active_subscription["expires_at"] or "-").replace("T", " ")[:19]
+            active_plan = f"{active_subscription['plan_name']} ({active_subscription['plan_code']}) до {expires_at}"
+
+        referral_code = referral["code"] or "-"
+        lines = [
+            "👤 Карточка пользователя",
+            f"Telegram ID: {telegram_user_id}",
+            f"ID в базе: {user_id}",
+            f"Имя: {user['full_name'] or '-'}",
+            f"Username: @{user['username']}" if user["username"] else "Username: -",
+            f"Телефон: {user['phone_number'] or '-'}",
+            f"Роль: {user['role']}",
+            f"Статус регистрации: {'registered' if int(user['is_registered']) else 'new'}",
+            f"Создан: {created_at}",
+            f"Зарегистрирован: {registered_at}",
+            f"Баланс кредитов: {int(user['credit_balance'])}",
+            f"Вложено: {int(credit_totals['total_in'])}",
+            f"Списано: {int(credit_totals['total_out'])}",
+            f"Транзакций: {int(credit_totals['transactions_count'])}",
+            f"Аккаунтов всего: {account_total}",
+            f"Постов в очереди/истории: {job_total}",
+            f"Публикаций: {publish_total}",
+            f"Активная подписка: {active_plan}",
+            f"Реферальный код: {referral_code}",
+            f"Рефералов: {int(referral['invited_count'])}",
+            f"Начислено по рефералам: {int(referral['total_rewards'])}",
+            "Аккаунты по соцсетям:",
+            f"• Telegram: {accounts_by_platform['telegram']}",
+            f"• VK: {accounts_by_platform['vk']}",
+            f"• Instagram: {accounts_by_platform['instagram']}",
+            f"• TikTok: {accounts_by_platform['tiktok']}",
+        ]
+        return "\n".join(lines)
+
+    def _send_admin_menu(self, chat_id: int) -> None:
+        self._require_admin(chat_id)
+        self._safe_send_message(
+            chat_id,
+            "🛠 Управление базой данных",
+            reply_markup=self._keyboard(
+                [
+                    [("👥 Пользователи", "admin|users"), ("📤 Экспорт пользователей", "admin|export_users")],
+                    [("👤 Карточка пользователя", "admin|user_card"), ("➕ Добавить админа", "admin|add_admin")],
+                    [("🗑️ Удалить пользователя", "admin|delete_user")],
+                    [("⬅️ Назад", "menu|main")],
+                ]
+            ),
+            ui=True,
+        )
+
+    def _dispatch_admin_callback(self, chat_id: int, parts: list[str]) -> str | None:
+        self._require_admin(chat_id)
+        action = parts[1] if len(parts) > 1 else ""
+        if action == "users":
+            self._safe_send_message(chat_id, self._admin_users_text(), ui=True)
+            return None
+        if action == "export_users":
+            csv_text = self._export_all_users_csv()
+            if not csv_text.strip():
+                return "Пока пользователей нет, выгружать нечего."
+            filename = f"users_export_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
+            if self._safe_send_document(
+                chat_id,
+                filename,
+                csv_text,
+                caption="Выгрузка всех пользователей в CSV",
+            ):
+                return None
+            return "Не удалось отправить CSV-файл с пользователями."
+        if action == "user_card":
+            self.sessions[chat_id] = {"flow": "admin_db", "step": "await_user_card"}
+            return "Введите Telegram user id пользователя, чтобы открыть карточку."
+        if action == "add_admin":
+            self.sessions[chat_id] = {"flow": "admin_db", "step": "await_add_admin"}
+            return "Введите Telegram user id пользователя, которого нужно сделать админом."
+        if action == "delete_user":
+            self.sessions[chat_id] = {"flow": "admin_db", "step": "await_delete_user"}
+            return "Введите Telegram user id пользователя, которого нужно удалить из базы."
+        self._send_admin_menu(chat_id)
+        return None
+
+    def _handle_admin_db_message(self, chat_id: int, message: dict) -> str:
+        self._require_admin(chat_id)
+        session = self.sessions.get(chat_id, {})
+        step = session.get("step")
+        raw_value = (message.get("text") or "").strip()
+        if not raw_value.isdigit():
+            return "Введите корректный Telegram user id числом."
+        telegram_user_id = int(raw_value)
+        if step == "await_delete_user":
+            owner_user = self.db.get_user(self._current_user_id(chat_id))
+            if owner_user and int(owner_user["telegram_user_id"]) == telegram_user_id:
+                return "Нельзя удалить собственного admin-пользователя из этой сессии."
+            deleted = self.db.delete_user_by_telegram_id(telegram_user_id)
+            self._reset_session(chat_id)
+            self._send_admin_menu(chat_id)
+            return (
+                f"🗑️ Пользователь {telegram_user_id} удалён из базы."
+                if deleted
+                else f"Пользователь {telegram_user_id} не найден."
+            )
+        if step == "await_user_card":
+            user = self.db.get_user_by_telegram_id(telegram_user_id)
+            if user is None:
+                self._reset_session(chat_id)
+                self._send_admin_menu(chat_id)
+                return f"Пользователь {telegram_user_id} не найден."
+            self._reset_session(chat_id)
+            self._safe_send_message(chat_id, self._admin_user_card_text(user), ui=True)
+            return None
+        if step == "await_add_admin":
+            user = self.db.get_user_by_telegram_id(telegram_user_id)
+            if user is None:
+                user = self.db.ensure_user(telegram_user_id, None, f"user-{telegram_user_id}")
+            self.db.set_user_role(int(user["id"]), "admin")
+            self.db.complete_user_registration(int(user["id"]))
+            self._reset_session(chat_id)
+            self._send_admin_menu(chat_id)
+            return f"✅ Пользователь {telegram_user_id} теперь admin."
+        self._reset_session(chat_id)
+        self._send_admin_menu(chat_id)
+        return None
+
+    def _handle_stateful_message(self, chat_id: int, message: dict, received_at: datetime) -> str:
+        session = self.sessions.get(chat_id)
+        if not session:
+            self._send_main_menu(chat_id)
+            return "Используйте кнопки меню ниже."
+        flow = session.get("flow")
+        if flow == "account_add":
+            return self._handle_add_account_message(chat_id, message)
+        if flow == "account_edit":
+            return self._handle_edit_account_message(chat_id, message, received_at)
+        if flow == "post":
+            return self._handle_post_message(chat_id, message, received_at)
+        if flow == "admin_db":
+            return self._handle_admin_db_message(chat_id, message)
+        self._send_main_menu(chat_id)
+        return "Используйте кнопки меню ниже."
+
+    def _handle_main_reply_keyboard_text(self, chat_id: int, text: str) -> bool:
+        session = self.sessions.get(chat_id)
+        if session:
+            return False
+        if text == MENU_BUTTON_POST:
+            self._start_post_flow(chat_id)
+            return True
+        if text == MENU_BUTTON_ACCOUNTS:
+            self._send_accounts_menu(chat_id)
+            return True
+        if text == MENU_BUTTON_PROFILE:
+            self._send_profile_menu(chat_id)
+            return True
+        if text == MENU_BUTTON_GUIDE:
+            self._send_guide_menu(chat_id)
+            return True
+        if text == MENU_BUTTON_PLANS:
+            self._send_plans_menu(chat_id)
+            return True
+        if text == MENU_BUTTON_BILLING:
+            self._send_billing_menu(chat_id)
+            return True
+        if text == MENU_BUTTON_ADDONS:
+            self._send_addons_menu(chat_id)
+            return True
+        if text == MENU_BUTTON_PARTNER:
+            self._send_partner_menu(chat_id)
+            return True
+        if text == MENU_BUTTON_NOTIFICATIONS:
+            self._send_notifications_menu(chat_id)
+            return True
+        if text == MENU_BUTTON_ACTIVITY:
+            self._send_activity_menu(chat_id)
+            return True
+        if text == MENU_BUTTON_RUN_DUE:
+            self._require_admin(chat_id)
+            processed = process_due_db_jobs(self.service, self.db, dry_run=False)
+            self._safe_send_message(chat_id, f"Обработано отложенных постов: {len(processed)}")
+            return True
+        if text == MENU_BUTTON_ADMIN:
+            self._send_admin_menu(chat_id)
+            return True
+        return False
+
+    def _dispatch_callback(self, chat_id: int, data: str) -> str | None:
+        parts = data.split("|")
+        if parts[:2] == ["menu", "main"]:
+            self._reset_session(chat_id)
+            self._send_main_menu(chat_id)
+            return None
+        if parts[:2] == ["menu", "profile"]:
+            self._reset_session(chat_id)
+            self._send_profile_menu(chat_id)
+            return None
+        if parts[:2] == ["menu", "plans"]:
+            self._send_plans_menu(chat_id)
+            return None
+        if parts[:2] == ["menu", "billing"]:
+            self._send_billing_menu(chat_id)
+            return None
+        if parts[:2] == ["menu", "addons"]:
+            self._send_addons_menu(chat_id)
+            return None
+        if parts[:2] == ["menu", "partner"]:
+            self._send_partner_menu(chat_id)
+            return None
+        if parts[:2] == ["menu", "notifications"]:
+            self._send_notifications_menu(chat_id)
+            return None
+        if parts[:2] == ["menu", "activity"]:
+            self._send_activity_menu(chat_id)
+            return None
+        if parts[:2] == ["menu", "accounts"]:
+            self._reset_session(chat_id)
+            self._send_accounts_menu(chat_id)
+            return None
+        if parts[:2] == ["menu", "post"]:
+            self._start_post_flow(chat_id)
+            return None
+        if parts[:2] == ["menu", "run_due"]:
+            self._require_admin(chat_id)
+            processed = process_due_db_jobs(self.service, self.db, dry_run=False)
+            return f"Обработано отложенных постов: {len(processed)}"
+        if parts[:2] == ["menu", "admin"]:
+            self._send_admin_menu(chat_id)
+            return None
+        if parts[0] == "acct":
+            return self._dispatch_account_callback(chat_id, parts)
+        if parts[0] == "bill":
+            return self._dispatch_billing_callback(chat_id, parts)
+        if parts[0] == "addons":
+            return self._dispatch_addons_callback(chat_id, parts)
+        if parts[0] == "post":
+            return self._dispatch_post_callback(chat_id, parts)
+        if parts[0] == "admin":
+            return self._dispatch_admin_callback(chat_id, parts)
+        return "Неизвестное действие."
+
+    def _test_media_command(self, text: str, media_type: str, chat_id: int) -> str:
+        parts = text.split(maxsplit=3)
+        if len(parts) < 3:
+            raise ValueError("Формат: /test_photo <account_id> <path_or_url> [caption]")
+        _, account_id_text, source = parts[:3]
+        caption = parts[3] if len(parts) >= 4 else ""
+        account_id = int(account_id_text)
+        owner_user_id = self._current_user_id(chat_id)
+        row = self.db.get_account(account_id, owner_user_id=owner_user_id)
+        if not row:
+            raise ValueError(f"Аккаунт #{account_id} не найден")
+        media_options: dict[str, Any] = {}
+        if source.startswith("http://") or source.startswith("https://"):
+            media_options["public_url"] = source
+        elif row["platform"] == "instagram":
+            media_options["public_url"] = self.cloudinary.upload_media(
+                source=source,
+                media_type=media_type,
+                public_id_prefix=f"instagram-test-{account_id}",
+            )
+        job = self._build_test_job(
+            account_id=account_id,
+            text=caption,
+            media_items=[MediaItem(source=source, media_type=media_type, options=media_options)],
+            owner_user_id=owner_user_id,
+        )
+        results = self.service.publish_job(job, dry_run=False)
+        self._log_publish_results(owner_user_id, results, external_post_id=job.post_id)
+        return self._format_results(results)

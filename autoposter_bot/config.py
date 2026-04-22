@@ -57,6 +57,12 @@ class Settings:
     cloudinary_api_key: str | None
     cloudinary_api_secret: str | None
     cloudinary_folder: str | None
+    yookassa_shop_id: str | None
+    yookassa_secret_key: str | None
+    yookassa_return_url: str | None
+    yookassa_webhook_url: str | None
+    yookassa_currency: str
+    yookassa_test_mode: bool
     database_path: Path
     queue_dir: Path
 
@@ -122,6 +128,12 @@ def load_settings(env_file: str | None = None) -> Settings:
         cloudinary_api_key=get_value("CLOUDINARY_API_KEY"),
         cloudinary_api_secret=get_value("CLOUDINARY_API_SECRET"),
         cloudinary_folder=get_value("CLOUDINARY_FOLDER", "autoposter"),
+        yookassa_shop_id=get_value("YOOKASSA_SHOP_ID"),
+        yookassa_secret_key=get_value("YOOKASSA_SECRET_KEY"),
+        yookassa_return_url=get_value("YOOKASSA_RETURN_URL"),
+        yookassa_webhook_url=get_value("YOOKASSA_WEBHOOK_URL"),
+        yookassa_currency=get_value("YOOKASSA_CURRENCY", "RUB") or "RUB",
+        yookassa_test_mode=_parse_bool(get_value("YOOKASSA_TEST_MODE", "false") or "false"),
         database_path=database_path,
         queue_dir=queue_dir,
     )
