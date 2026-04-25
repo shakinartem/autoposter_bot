@@ -30,6 +30,19 @@ def process_due_db_jobs(service: AutoposterService, db: Database, dry_run: bool 
     processed: list[str] = []
     for job in db.get_due_jobs(datetime.now()):
         results = service.publish_job(job, dry_run=dry_run)
+        owner_user_id = job.metadata.get("owner_user_id")
+        job_id = int(job.metadata["job_id"]) if job.metadata.get("job_id") else None
+        if owner_user_id and not dry_run:
+            for result in results:
+                db.add_publish_event(
+                    int(owner_user_id),
+                    job_id=job_id,
+                    external_post_id=job.post_id,
+                    platform=result.platform,
+                    destination=result.destination,
+                    status="ok" if result.ok else "fail",
+                    detail=result.detail,
+                )
         if job_id := job.metadata.get("job_id"):
             if all(result.ok for result in results):
                 processed.append(job.post_id)
