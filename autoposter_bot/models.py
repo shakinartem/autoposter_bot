@@ -41,3 +41,25 @@ class PostJob:
         if not self.media_items:
             return None
         return self.media_items[0].source
+
+
+@dataclass(slots=True)
+class OAuthConnection:
+    connection_key: str
+    platform: str
+    telegram_user_id: int | None = None
+    account_external_id: str | None = None
+    account_name: str | None = None
+    destination: str | None = None
+    access_token: str | None = None
+    refresh_token: str | None = None
+    token_type: str | None = None
+    scope: str | None = None
+    status: str = "active"
+    expires_at: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    synced_at: str | None = None
+
+    @property
+    def is_active(self) -> bool:
+        return self.status.lower() == "active"

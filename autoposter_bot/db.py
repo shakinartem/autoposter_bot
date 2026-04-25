@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator
 
-from autoposter_bot.models import MediaItem, PostJob, Target
+from autoposter_bot.models import MediaItem, OAuthConnection, PostJob, Target
 
 
 SCHEMA = """
@@ -147,6 +147,28 @@ CREATE TABLE IF NOT EXISTS accounts (
     options_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
     FOREIGN KEY(owner_user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS oauth_connections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    connection_key TEXT NOT NULL UNIQUE,
+    owner_user_id INTEGER,
+    telegram_user_id INTEGER,
+    platform TEXT NOT NULL,
+    account_external_id TEXT,
+    account_name TEXT,
+    destination TEXT,
+    access_token TEXT,
+    refresh_token TEXT,
+    token_type TEXT,
+    scope TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
+    expires_at TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    synced_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(owner_user_id) REFERENCES users(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS jobs (
@@ -1180,6 +1202,243 @@ class Database:
                 updated += 1
             return updated
 
+    def upsert_oauth_connection(
+        self,
+        connection_data: OAuthConnection,
+        owner_user_id: int | None = None,
+    ) -> int:
+        now = datetime.utcnow().isoformat()
+        with self.connect() as connection:
+            existing = connection.execute(
+                "SELECT id FROM oauth_connections WHERE connection_key = ?",
+                (connection_data.connection_key,),
+            ).fetchone()
+            update_values = (
+                owner_user_id,
+                connection_data.telegram_user_id,
+                connection_data.platform.lower(),
+                connection_data.account_external_id,
+                connection_data.account_name,
+                connection_data.destination,
+                connection_data.access_token,
+                connection_data.refresh_token,
+                connection_data.token_type,
+                connection_data.scope,
+                connection_data.status,
+                connection_data.expires_at,
+                json.dumps(connection_data.metadata, ensure_ascii=False),
+                connection_data.synced_at or now,
+            )
+            if existing:
+                connection.execute(
+                    """
+                    UPDATE oauth_connections
+                    SET owner_user_id = ?,
+                        telegram_user_id = ?,
+                        platform = ?,
+                        account_external_id = ?,
+                        account_name = ?,
+                        destination = ?,
+                        access_token = ?,
+                        refresh_token = ?,
+                        token_type = ?,
+                        scope = ?,
+                        status = ?,
+                        expires_at = ?,
+                        metadata_json = ?,
+                        synced_at = ?,
+                        updated_at = ?
+                    WHERE connection_key = ?
+                    """,
+                    update_values + (now, connection_data.connection_key),
+                )
+                return int(existing["id"])
+
+            cursor = connection.execute(
+                """
+                INSERT INTO oauth_connections(
+                    owner_user_id,
+                    telegram_user_id,
+                    platform,
+                    account_external_id,
+                    account_name,
+                    destination,
+                    access_token,
+                    refresh_token,
+                    token_type,
+                    scope,
+                    status,
+                    expires_at,
+                    metadata_json,
+                    synced_at,
+                    created_at,
+                    updated_at,
+                    connection_key
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                update_values + (now, now, connection_data.connection_key),
+            )
+            return int(cursor.lastrowid)
+
+    def list_oauth_connections(
+        self,
+        owner_user_id: int | None = None,
+        platform: str | None = None,
+    ) -> list[sqlite3.Row]:
+        query = """
+            SELECT id, connection_key, owner_user_id, telegram_user_id, platform, account_external_id,
+                   account_name, destination, access_token, refresh_token, token_type, scope, status,
+                   expires_at, metadata_json, synced_at, created_at, updated_at
+            FROM oauth_connections
+        """
+        clauses: list[str] = []
+        params: list[Any] = []
+        if owner_user_id is not None:
+            clauses.append("owner_user_id = ?")
+            params.append(owner_user_id)
+        if platform is not None:
+            clauses.append("platform = ?")
+            params.append(platform.lower())
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY platform, account_name, id"
+        with self.connect() as connection:
+            return list(connection.execute(query, params).fetchall())
+
+    def get_oauth_connection(
+        self,
+        connection_key: str,
+        owner_user_id: int | None = None,
+    ) -> sqlite3.Row | None:
+        query = """
+            SELECT id, connection_key, owner_user_id, telegram_user_id, platform, account_external_id,
+                   account_name, destination, access_token, refresh_token, token_type, scope, status,
+                   expires_at, metadata_json, synced_at, created_at, updated_at
+            FROM oauth_connections
+            WHERE connection_key = ?
+        """
+        params: list[Any] = [connection_key]
+        if owner_user_id is not None:
+            query += " AND owner_user_id = ?"
+            params.append(owner_user_id)
+        with self.connect() as connection:
+            return connection.execute(query, params).fetchone()
+
+    def mark_oauth_connection_revoked(
+        self,
+        connection_key: str,
+        owner_user_id: int | None = None,
+    ) -> bool:
+        now = datetime.utcnow().isoformat()
+        updates = ["status = 'revoked'", "updated_at = ?"]
+        params: list[Any] = [now, connection_key]
+        if owner_user_id is not None:
+            updates.insert(0, "owner_user_id = ?")
+            params.insert(0, owner_user_id)
+        with self.connect() as connection:
+            cursor = connection.execute(
+                f"UPDATE oauth_connections SET {', '.join(updates)} WHERE connection_key = ?",
+                params,
+            )
+            return cursor.rowcount > 0
+
+    def attach_oauth_connection_to_account(
+        self,
+        account_id: int,
+        connection_key: str,
+        owner_user_id: int | None = None,
+    ) -> bool:
+        row = self.get_account(account_id, owner_user_id=owner_user_id)
+        if not row:
+            return False
+        options = json.loads(row["options_json"] or "{}")
+        options["oauth_connection_key"] = connection_key
+        with self.connect() as connection:
+            if owner_user_id is None:
+                cursor = connection.execute(
+                    "UPDATE accounts SET options_json = ? WHERE id = ?",
+                    (json.dumps(options, ensure_ascii=False), account_id),
+                )
+            else:
+                cursor = connection.execute(
+                    "UPDATE accounts SET options_json = ? WHERE id = ? AND owner_user_id = ?",
+                    (json.dumps(options, ensure_ascii=False), account_id, owner_user_id),
+                )
+            return cursor.rowcount > 0
+
+    def resolve_account_options(
+        self,
+        account_id: int,
+        owner_user_id: int | None = None,
+    ) -> dict[str, Any]:
+        row = self.get_account(account_id, owner_user_id=owner_user_id)
+        if not row:
+            return {}
+        options = json.loads(row["options_json"] or "{}")
+        connection_key = options.get("oauth_connection_key")
+        if connection_key:
+            oauth_row = self.get_oauth_connection(connection_key, owner_user_id=owner_user_id)
+            if oauth_row:
+                oauth_options = json.loads(oauth_row["metadata_json"] or "{}")
+                if oauth_row["access_token"]:
+                    options.setdefault("access_token", oauth_row["access_token"])
+                if oauth_row["refresh_token"]:
+                    options.setdefault("refresh_token", oauth_row["refresh_token"])
+                if oauth_row["token_type"]:
+                    options.setdefault("token_type", oauth_row["token_type"])
+                if oauth_row["scope"]:
+                    options.setdefault("scope", oauth_row["scope"])
+                if oauth_row["expires_at"]:
+                    options.setdefault("expires_at", oauth_row["expires_at"])
+                options.setdefault("oauth_status", oauth_row["status"])
+                options.setdefault("oauth_platform", oauth_row["platform"])
+                options.setdefault("oauth_connection_key", oauth_row["connection_key"])
+                options.setdefault("oauth_account_external_id", oauth_row["account_external_id"])
+                options.setdefault("oauth_account_name", oauth_row["account_name"])
+                options.setdefault("oauth_destination", oauth_row["destination"])
+                if oauth_options:
+                    existing_metadata = options.get("oauth_metadata")
+                    if not isinstance(existing_metadata, dict):
+                        existing_metadata = {}
+                    merged_metadata = {**oauth_options, **existing_metadata}
+                    options["oauth_metadata"] = merged_metadata
+        return options
+
+    def sync_oauth_connections(
+        self,
+        connections: list[OAuthConnection],
+        owner_user_id: int | None = None,
+    ) -> int:
+        synced = 0
+        for connection_data in connections:
+            self.upsert_oauth_connection(connection_data, owner_user_id=owner_user_id)
+            if owner_user_id is not None and connection_data.account_name:
+                existing = self.list_accounts(owner_user_id=owner_user_id)
+                matched = next(
+                    (
+                        row
+                        for row in existing
+                        if row["platform"] == connection_data.platform.lower()
+                        and (
+                            row["name"] == connection_data.account_name
+                            or (
+                                connection_data.destination is not None
+                                and row["destination"] == connection_data.destination
+                            )
+                        )
+                    ),
+                    None,
+                )
+                if matched:
+                    self.attach_oauth_connection_to_account(
+                        int(matched["id"]),
+                        connection_data.connection_key,
+                        owner_user_id=owner_user_id,
+                    )
+            synced += 1
+        return synced
+
     def create_job(
         self,
         post_id: str,
@@ -1308,7 +1567,7 @@ class Database:
                                 destination=target_row["destination"],
                                 account_id=int(target_row["id"]),
                                 account_name=target_row["name"],
-                                options=json.loads(target_row["options_json"] or "{}"),
+                                options=self.resolve_account_options(int(target_row["id"]), owner_user_id=row["owner_user_id"]),
                             )
                             for target_row in target_rows
                         ],

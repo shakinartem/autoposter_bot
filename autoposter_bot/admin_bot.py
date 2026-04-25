@@ -246,6 +246,12 @@ class TelegramAdminBot:
             return self._add_instagram_command(text, chat_id)
         if text.startswith("/add_tiktok "):
             return self._add_tiktok_command(text, chat_id)
+        if text.startswith("/oauth_connections"):
+            return self._oauth_connections_command(chat_id)
+        if text.startswith("/sync_oauth_connections"):
+            return self._sync_oauth_connections_command(chat_id)
+        if text.startswith("/link_oauth "):
+            return self._link_oauth_connection_command(text, chat_id)
         if text.startswith("/test_text "):
             return self._test_text_command(text, chat_id)
         if text.startswith("/test_photo "):
@@ -311,6 +317,12 @@ class TelegramAdminBot:
         if parts[:2] == ["menu", "accounts"]:
             self._reset_session(chat_id)
             self._send_accounts_menu(chat_id)
+            return None
+        if parts[:2] == ["menu", "oauth_connections"]:
+            self._safe_send_message(chat_id, self._oauth_connections_command(chat_id), reply_markup=self._admin_back_markup(), ui=True)
+            return None
+        if parts[:2] == ["menu", "sync_oauth_connections"]:
+            self._safe_send_message(chat_id, self._sync_oauth_connections_command(chat_id), reply_markup=self._admin_back_markup(), ui=True)
             return None
         if parts[:2] == ["menu", "post"]:
             self._start_post_flow(chat_id)
@@ -819,7 +831,7 @@ class TelegramAdminBot:
             destination=row["destination"],
             account_id=int(row["id"]),
             account_name=row["name"],
-            options=json.loads(row["options_json"] or "{}"),
+            options=self.db.resolve_account_options(int(row["id"]), owner_user_id=owner_user_id),
         )
         content_type = self._resolve_content_type(target.platform, draft.content_kind, draft.media_items)
         return PostJob(
@@ -993,7 +1005,8 @@ class TelegramAdminBot:
         )
 
     def _account_details_text(self, row) -> str:
-        options = json.loads(row["options_json"] or "{}")
+        owner_user_id = int(row["owner_user_id"]) if row["owner_user_id"] is not None else None
+        options = self.db.resolve_account_options(int(row["id"]), owner_user_id=owner_user_id)
         token_preview = self._masked_token_for_account(row["platform"], options)
         obtained_at, expires_at = self._token_dates_for_account(row["platform"])
         lines = [
@@ -1004,6 +1017,8 @@ class TelegramAdminBot:
         ]
         if token_preview:
             lines.append(f"Token: {token_preview}")
+        if options.get("oauth_connection_key"):
+            lines.append(f"OAuth connection: {options['oauth_connection_key']}")
         if obtained_at:
             lines.append(f"Получен: {obtained_at}")
         if expires_at:
@@ -2155,6 +2170,36 @@ class TelegramAdminBot:
         account_id = self._create_account(name, "tiktok", username, self._current_user_id(chat_id))
         return f"Добавлен TikTok-аккаунт #{account_id}: {name} -> {username}"
 
+    def _oauth_connections_command(self, chat_id: int) -> str:
+        rows = self.service.list_oauth_connections_for_user(self._current_user_id(chat_id))
+        if not rows:
+            return (
+                "OAuth-подключения не найдены.\n"
+                "Если аккаунт уже подключён на spgutils.ru, выполните /sync_oauth_connections."
+            )
+        lines = ["OAuth-подключения:"]
+        for row in rows:
+            lines.append(
+                f"#{row['id']} | {row['platform']} | {row['account_name'] or '-'} | "
+                f"{row['destination'] or '-'} | {row['status']} | key={row['connection_key']}"
+            )
+        return "\n".join(lines)
+
+    def _sync_oauth_connections_command(self, chat_id: int) -> str:
+        synced = self.service.sync_oauth_connections_for_user(self._current_user_id(chat_id))
+        return f"Синхронизировано OAuth-подключений: {synced}"
+
+    def _link_oauth_connection_command(self, text: str, chat_id: int) -> str:
+        parts = text.split(maxsplit=2)
+        if len(parts) != 3:
+            raise ValueError("Формат: /link_oauth <account_id> <connection_key>")
+        account_id = int(parts[1])
+        connection_key = parts[2].strip()
+        owner_user_id = self._current_user_id(chat_id)
+        if not self.db.attach_oauth_connection_to_account(account_id, connection_key, owner_user_id=owner_user_id):
+            raise ValueError(f"Не удалось связать аккаунт #{account_id} с {connection_key}")
+        return f"Аккаунт #{account_id} связан с OAuth connection {connection_key}"
+
     def _test_text_command(self, text: str, chat_id: int) -> str:
         parts = text.split(maxsplit=2)
         if len(parts) < 3:
@@ -2212,7 +2257,7 @@ class TelegramAdminBot:
             destination=row["destination"],
             account_id=int(row["id"]),
             account_name=row["name"],
-            options=json.loads(row["options_json"] or "{}"),
+            options=self.db.resolve_account_options(int(row["id"]), owner_user_id=owner_user_id),
         )
         content_kind = "text" if not media_items else media_items[0].media_type
         return PostJob(
@@ -2915,6 +2960,7 @@ class TelegramAdminBot:
                 [
                     [("📚 Список аккаунтов", "acct|list"), ("➕ Добавить", "acct|add")],
                     [("✏️ Изменить", "acct|edit"), ("🗑️ Удалить", "acct|delete")],
+                    [("🔗 OAuth", "menu|oauth_connections"), ("🔄 Sync OAuth", "menu|sync_oauth_connections")],
                     [("⬅️ Назад", "menu|main")],
                 ]
             ),

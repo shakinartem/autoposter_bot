@@ -32,6 +32,13 @@ def build_parser() -> argparse.ArgumentParser:
     delete_parser = subparsers.add_parser("delete-account", help="Delete account from database by id")
     delete_parser.add_argument("account_id", type=int)
 
+    subparsers.add_parser("oauth-connections", help="List synced OAuth connections in the local database")
+    sync_oauth_parser = subparsers.add_parser(
+        "sync-oauth-connections",
+        help="Fetch OAuth connections from spgutils and store them locally",
+    )
+    sync_oauth_parser.add_argument("--telegram-user-id", type=int, default=None)
+
     schedule_parser = subparsers.add_parser("schedule-post", help="Create scheduled job in database")
     schedule_parser.add_argument("--post-id", required=True)
     schedule_parser.add_argument("--content-type", required=True)
@@ -105,6 +112,31 @@ def main() -> None:
             print(f"Deleted account #{args.account_id}: {row['platform']} | {row['name']} | {row['destination']}")
         else:
             print(f"Failed to delete account #{args.account_id}")
+        return
+
+    if args.command == "oauth-connections":
+        db.init_schema()
+        rows = db.list_oauth_connections()
+        for row in rows:
+            print(
+                f"[{row['id']}] {row['platform']} | {row['account_name'] or '-'} | "
+                f"{row['destination'] or '-'} | {row['status']} | key={row['connection_key']}"
+            )
+        return
+
+    if args.command == "sync-oauth-connections":
+        db.init_schema()
+        owner_user_id = None
+        if args.telegram_user_id is not None:
+            user = db.get_user_by_telegram_id(args.telegram_user_id)
+            owner_user_id = int(user["id"]) if user else None
+            if owner_user_id is None:
+                print(f"Telegram user {args.telegram_user_id} not found")
+                return
+        if owner_user_id is None:
+            raise ValueError("--telegram-user-id is required to sync OAuth connections from spgutils")
+        synced = service.sync_oauth_connections_for_user(owner_user_id)
+        print(f"Synced {synced} OAuth connection(s)")
         return
 
     if args.command == "schedule-post":
