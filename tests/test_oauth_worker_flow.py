@@ -40,8 +40,13 @@ class FakeWorkerClient:
         self.connections = connections
         self.calls: list[int | None] = []
         self.token_calls: list[str] = []
+        self.meta_page_calls: list[tuple[str, str]] = []
 
-    def list_connections(self, telegram_user_id: int | None = None) -> list[OAuthConnection]:
+    def list_connections(
+        self,
+        telegram_user_id: int | None = None,
+        provider: str | None = None,
+    ) -> list[OAuthConnection]:
         self.calls.append(telegram_user_id)
         return self.connections
 
@@ -49,7 +54,8 @@ class FakeWorkerClient:
         self.token_calls.append(str(connection_id))
         return {"ok": True, "access_token": "worker-token", "scope": "posting"}
 
-    def get_meta_page(self, page_id: str | int, connection_id: str | int) -> dict:
+    def get_meta_page(self, connection_id: str | int, page_id: str | int) -> dict:
+        self.meta_page_calls.append((str(connection_id), str(page_id)))
         return {
             "ok": True,
             "page": {
@@ -71,7 +77,7 @@ class OAuthWorkerFlowTests(unittest.TestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self.tempdir, ignore_errors=True)
 
-    def test_link_start(self) -> None:
+    def test_start_oauth_link(self) -> None:
         client = SpgUtilsClient("https://api.spgutils.ru", "worker-token", timeout_seconds=20)
         response = Mock()
         response.raise_for_status.return_value = None
@@ -83,7 +89,7 @@ class OAuthWorkerFlowTests(unittest.TestCase):
         }
         client.http.request = Mock(return_value=response)
 
-        payload = client.start_link(12345, 67890, "tiktok")
+        payload = client.start_oauth_link("tiktok", 12345, 67890)
 
         self.assertEqual(payload["link_token"], "link-123")
         client.http.request.assert_called_once_with(
@@ -98,11 +104,52 @@ class OAuthWorkerFlowTests(unittest.TestCase):
             headers={
                 "Accept": "application/json",
                 "Authorization": "Bearer worker-token",
+                "Content-Type": "application/json",
             },
             timeout=20,
         )
 
-    def test_start_oauth_done(self) -> None:
+    def test_link_result_connected(self) -> None:
+        client = SpgUtilsClient("https://api.spgutils.ru", "worker-token", timeout_seconds=20)
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "ok": True,
+            "link": {
+                "link_token": "link-abc",
+                "provider": "tiktok",
+                "telegram_user_id": "55555",
+                "status": "connected",
+                "connection_id": 7,
+            },
+            "connection": {
+                "id": 7,
+                "provider": "tiktok",
+                "provider_user_id": "creator-77",
+                "telegram_user_id": "55555",
+                "link_token": "link-abc",
+                "scopes": "posting",
+                "revoked": 0,
+            },
+        }
+        client.http.request = Mock(return_value=response)
+
+        payload = client.get_link_result("link-abc")
+
+        self.assertTrue(payload["ok"])
+        client.http.request.assert_called_once_with(
+            "GET",
+            "https://api.spgutils.ru/api/link/result",
+            params={"link_token": "link-abc"},
+            json=None,
+            headers={
+                "Accept": "application/json",
+                "Authorization": "Bearer worker-token",
+            },
+            timeout=20,
+        )
+
+    def test_oauth_done_deeplink(self) -> None:
         user = self.db.ensure_user(55555, "oauth_user", "OAuth User")
         owner_user_id = int(user["id"])
         bot = TelegramAdminBot.__new__(TelegramAdminBot)
@@ -165,9 +212,8 @@ class OAuthWorkerFlowTests(unittest.TestCase):
         service.spgutils = FakeWorkerClient(
             [
                 OAuthConnection(
-                    connection_key="conn-55",
-                    connection_id="conn-55",
-                    platform="tiktok",
+                    remote_connection_id="conn-55",
+                    provider="tiktok",
                     telegram_user_id=44444,
                     account_name="Sync TikTok",
                     destination="@sync_tiktok",
@@ -186,7 +232,7 @@ class OAuthWorkerFlowTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["platform"], "tiktok")
 
-    def test_token_fetch_before_publish(self) -> None:
+    def test_get_token_before_publish(self) -> None:
         user = self.db.ensure_user(33333, "publisher", "Publisher")
         owner_user_id = int(user["id"])
         self.db.complete_user_registration(owner_user_id)
@@ -223,6 +269,12 @@ class OAuthWorkerFlowTests(unittest.TestCase):
         self.assertTrue(results[0].ok)
         self.assertEqual(service.spgutils.token_calls, ["conn-100"])
         self.assertEqual(recorder.calls[0][1].options["access_token"], "worker-token")
+
+    def test_no_tokens_in_logs(self) -> None:
+        bot = TelegramAdminBot.__new__(TelegramAdminBot)
+        redacted = bot._redact_text("/start oauth_done_link-abc access_token=secret refresh_token=secret")
+        self.assertNotIn("secret", redacted)
+        self.assertIn("oauth_done_[REDACTED]", redacted)
 
 
 if __name__ == "__main__":

@@ -30,11 +30,11 @@ class SpgUtilsClient:
     def is_configured(self) -> bool:
         return bool(self.base_url)
 
-    def start_link(
+    def start_oauth_link(
         self,
+        provider: str,
         telegram_user_id: int,
         telegram_chat_id: int,
-        provider: str,
     ) -> dict[str, Any]:
         payload = self._request_json(
             "POST",
@@ -49,6 +49,14 @@ class SpgUtilsClient:
             raise ValueError(f"Unexpected link/start payload: {payload!r}")
         return payload
 
+    def start_link(
+        self,
+        telegram_user_id: int,
+        telegram_chat_id: int,
+        provider: str,
+    ) -> dict[str, Any]:
+        return self.start_oauth_link(provider, telegram_user_id, telegram_chat_id)
+
     def get_link_result(self, link_token: str) -> dict[str, Any]:
         payload = self._request_json(
             "GET",
@@ -59,11 +67,22 @@ class SpgUtilsClient:
             raise ValueError(f"Unexpected link/result payload: {payload!r}")
         return payload
 
-    def list_connections(self, telegram_user_id: int | None = None) -> list[OAuthConnection]:
+    def list_connections(
+        self,
+        telegram_user_id: int | None = None,
+        provider: str | None = None,
+    ) -> list[OAuthConnection]:
+        params: dict[str, Any] | None = None
+        if telegram_user_id is not None or provider is not None:
+            params = {}
+            if telegram_user_id is not None:
+                params["telegram_user_id"] = telegram_user_id
+            if provider is not None:
+                params["provider"] = provider
         payload = self._request_json(
             "GET",
             "/api/connections/list",
-            params={"telegram_user_id": telegram_user_id} if telegram_user_id is not None else None,
+            params=params,
         )
         return self._parse_connections_payload(payload)
 
@@ -77,7 +96,7 @@ class SpgUtilsClient:
             raise ValueError(f"Unexpected connections/token payload: {payload!r}")
         return payload
 
-    def get_meta_page(self, page_id: str | int, connection_id: str | int) -> dict[str, Any]:
+    def get_meta_page(self, connection_id: str | int, page_id: str | int) -> dict[str, Any]:
         payload = self._request_json(
             "GET",
             "/api/meta/page",
@@ -101,17 +120,12 @@ class SpgUtilsClient:
             detail = "ok"
         return SpgUtilsStatus(ok=ok, detail=detail, payload=payload)
 
-    def revoke_connection(
-        self,
-        connection_key: str,
-        telegram_user_id: int | None = None,
-    ) -> SpgUtilsStatus:
+    def revoke_connection(self, connection_id: str | int) -> SpgUtilsStatus:
         payload = self._request_json(
             "POST",
             "/api/connections/revoke",
             json_body={
-                "connection_key": connection_key,
-                "telegram_user_id": telegram_user_id,
+                "connection_id": str(connection_id),
             },
         )
         if isinstance(payload, dict):
@@ -135,6 +149,8 @@ class SpgUtilsClient:
         headers = {"Accept": "application/json"}
         if self.api_token:
             headers["Authorization"] = f"Bearer {self.api_token}"
+        if json_body is not None:
+            headers["Content-Type"] = "application/json"
         response = self.http.request(
             method,
             f"{self.base_url}{path}",
@@ -172,7 +188,7 @@ class SpgUtilsClient:
                 metadata = {**metadata, **account_metadata}
             else:
                 metadata = dict(metadata)
-        connection_id = self._coerce_str(
+        remote_connection_id = self._coerce_str(
             payload.get("connection_id")
             or payload.get("connection_key")
             or payload.get("id")
@@ -180,10 +196,10 @@ class SpgUtilsClient:
             or payload.get("account_external_id")
             or payload.get("account_id")
         )
-        connection_key = connection_id or ""
+        connection_key = remote_connection_id or ""
         if not connection_key:
             raise ValueError(f"Connection payload is missing a stable id: {payload}")
-        platform = str(payload.get("platform") or payload.get("provider") or "unknown").lower()
+        provider = str(payload.get("provider") or payload.get("platform") or "unknown").lower()
         telegram_user_id = payload.get("telegram_user_id")
         if telegram_user_id is None:
             telegram_user_id = payload.get("user_id")
@@ -205,8 +221,9 @@ class SpgUtilsClient:
             extra_metadata = {k: v for k, v in account.items() if k not in {"id", "name", "username", "handle", "metadata"}}
             metadata = {**metadata, **extra_metadata}
         return OAuthConnection(
-            connection_key=connection_key,
-            platform=platform,
+            id=None,
+            remote_connection_id=connection_key,
+            provider=provider,
             telegram_user_id=int(telegram_user_id) if telegram_user_id is not None and str(telegram_user_id).isdigit() else None,
             account_external_id=str(account_external_id) if account_external_id is not None else None,
             account_name=str(account_name) if account_name is not None else None,
@@ -219,7 +236,6 @@ class SpgUtilsClient:
             expires_at=str(expires_at) if expires_at is not None else None,
             metadata=metadata,
             synced_at=str(synced_at) if synced_at is not None else None,
-            connection_id=connection_key,
             provider_user_id=self._coerce_str(provider_user_id),
             link_token=self._coerce_str(link_token),
             scopes=self._coerce_str(scopes) if scopes is not None else (self._coerce_scope_list(scope) if scope is not None else None),

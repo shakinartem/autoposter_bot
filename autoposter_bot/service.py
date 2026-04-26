@@ -70,7 +70,7 @@ class AutoposterService:
         return results
 
     def start_oauth_link(self, telegram_user_id: int, telegram_chat_id: int, provider: str) -> dict:
-        return self.spgutils.start_link(telegram_user_id, telegram_chat_id, provider)
+        return self.spgutils.start_oauth_link(provider, telegram_user_id, telegram_chat_id)
 
     def get_oauth_link_result(self, link_token: str) -> dict:
         return self.spgutils.get_link_result(link_token)
@@ -110,7 +110,7 @@ class AutoposterService:
                 or hydrated.get("oauth_account_external_id")
             )
             if page_id is not None:
-                page_payload = self.spgutils.get_meta_page(str(page_id), str(connection_id))
+                page_payload = self.spgutils.get_meta_page(str(connection_id), str(page_id))
                 hydrated.update(self._extract_meta_page_options(page_payload))
         return hydrated
 
@@ -138,11 +138,18 @@ class AutoposterService:
                 sources.append(value)
         options: dict[str, object] = {}
         for source in sources:
+            instagram_business_account = source.get("instagram_business_account")
+            if isinstance(instagram_business_account, dict):
+                for key in ("id", "instagram_business_account_id"):
+                    value = instagram_business_account.get(key)
+                    if value is not None and "ig_user_id" not in options:
+                        options["ig_user_id"] = value
             for key in (
                 "page_id",
                 "meta_page_id",
                 "ig_user_id",
                 "instagram_user_id",
+                "instagram_business_account_id",
                 "page_access_token",
                 "access_token",
                 "username",
@@ -158,6 +165,8 @@ class AutoposterService:
             options["meta_page_id"] = options["page_id"]
         if "ig_user_id" not in options and options.get("instagram_user_id") is not None:
             options["ig_user_id"] = options["instagram_user_id"]
+        if "ig_user_id" not in options and options.get("instagram_business_account_id") is not None:
+            options["ig_user_id"] = options["instagram_business_account_id"]
         if "destination" not in options:
             destination = options.get("username") or options.get("name")
             if destination is not None:

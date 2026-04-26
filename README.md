@@ -31,6 +31,8 @@ py -m pip install -e .
 - `INSTAGRAM_ACCESS_TOKEN`
 - `TIKTOK_ACCESS_TOKEN`
 
+These are legacy fallback values. The primary flow is now Telegram OAuth linking through `api.spgutils.ru`.
+
 Для Telegram-админки:
 
 - `TELEGRAM_ADMIN_USER_IDS`
@@ -63,6 +65,18 @@ py -m pip install -e .
 autoposter init-db
 autoposter admin-bot
 ```
+
+## OAuth Flow via Worker
+
+The preferred account-linking flow now goes through `api.spgutils.ru`:
+
+1. In Telegram, open `Аккаунты` and press `Connect TikTok` or `Connect Meta / Instagram`.
+2. The bot calls `POST /api/link/start` on the Worker.
+3. The Worker returns an `auth_url`.
+4. The user authorizes in the browser and the Worker redirects back to Telegram with `oauth_done_<link_token>`.
+5. The bot resolves the link result, stores the connection locally, and uses the Worker token API before publishing.
+
+Manual `INSTAGRAM_ACCESS_TOKEN` / `TIKTOK_ACCESS_TOKEN` values are still supported as a fallback, but they are no longer the primary linking path.
 
 ## Telegram-админка
 

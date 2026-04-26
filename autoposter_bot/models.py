@@ -45,8 +45,9 @@ class PostJob:
 
 @dataclass(slots=True)
 class OAuthConnection:
-    connection_key: str
-    platform: str
+    id: int | None = None
+    remote_connection_id: str | None = None
+    provider: str = "unknown"
     telegram_user_id: int | None = None
     account_external_id: str | None = None
     account_name: str | None = None
@@ -59,7 +60,6 @@ class OAuthConnection:
     expires_at: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     synced_at: str | None = None
-    connection_id: str | None = None
     provider_user_id: str | None = None
     link_token: str | None = None
     scopes: str | None = None
@@ -68,3 +68,23 @@ class OAuthConnection:
     @property
     def is_active(self) -> bool:
         return self.status.lower() == "active"
+
+    @property
+    def connection_key(self) -> str:
+        return self.remote_connection_id or ""
+
+    @property
+    def platform(self) -> str:
+        return self.provider
+
+    @platform.setter
+    def platform(self, value: str) -> None:
+        self.provider = value
+
+    @property
+    def connection_id(self) -> str:
+        return self.remote_connection_id or ""
+
+    @connection_id.setter
+    def connection_id(self, value: str) -> None:
+        self.remote_connection_id = value

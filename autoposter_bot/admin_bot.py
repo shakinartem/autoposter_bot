@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -131,18 +132,18 @@ class TelegramAdminBot:
 
         if text.startswith("/whoami"):
             reply = f"Ваш Telegram user id: {user_id}"
-            print(f"[admin-bot] reply for chat_id={chat_id}: {reply}")
+            print(f"[admin-bot] reply for chat_id={chat_id}: {self._redact_text(reply)}")
             self._safe_send_message(chat_id, reply)
             return
         if not self._is_allowed(user_id):
             reply = "Доступ запрещён. Добавьте ваш Telegram user id в TELEGRAM_ADMIN_USER_IDS."
-            print(f"[admin-bot] reply for chat_id={chat_id}: {reply}")
+            print(f"[admin-bot] reply for chat_id={chat_id}: {self._redact_text(reply)}")
             self._safe_send_message(chat_id, reply)
             return
         self._ensure_current_user(chat_id, message.get("from") or {})
         oauth_reply = self._handle_oauth_done_start_payload(chat_id, text)
         if oauth_reply is not None:
-            print(f"[admin-bot] reply for chat_id={chat_id}: {oauth_reply}")
+            print(f"[admin-bot] reply for chat_id={chat_id}: {self._redact_text(oauth_reply)}")
             self._safe_send_message(chat_id, oauth_reply)
             return
         start_ref_message = self._maybe_apply_referral(chat_id, text)
@@ -163,7 +164,7 @@ class TelegramAdminBot:
                 return
             self._send_welcome_menu(chat_id)
             reply = "Сначала завершите регистрацию, чтобы открыть полный интерфейс."
-            print(f"[admin-bot] reply for chat_id={chat_id}: {reply}")
+            print(f"[admin-bot] reply for chat_id={chat_id}: {self._redact_text(reply)}")
             self._safe_send_message(chat_id, reply)
             return
         if self._handle_main_reply_keyboard_text(chat_id, text):
@@ -181,7 +182,7 @@ class TelegramAdminBot:
                 reply = f"Ошибка: {exc}"
             if start_ref_message:
                 reply = f"{start_ref_message}\n\n{reply}" if reply else start_ref_message
-            print(f"[admin-bot] reply for chat_id={chat_id}: {reply}")
+            print(f"[admin-bot] reply for chat_id={chat_id}: {self._redact_text(reply)}")
             if reply:
                 self._safe_send_message(chat_id, reply)
             return
@@ -192,7 +193,7 @@ class TelegramAdminBot:
             reply = f"Ошибка: {exc}"
         if start_ref_message:
             reply = f"{start_ref_message}\n\n{reply}" if reply else start_ref_message
-        print(f"[admin-bot] reply for chat_id={chat_id}: {reply}")
+        print(f"[admin-bot] reply for chat_id={chat_id}: {self._redact_text(reply)}")
         if reply:
             self._safe_send_message(chat_id, reply)
 
@@ -217,7 +218,7 @@ class TelegramAdminBot:
                 reply = self._dispatch_callback(chat_id, data)
             except Exception as exc:
                 reply = f"Ошибка: {exc}"
-        print(f"[admin-bot] reply for chat_id={chat_id}: {reply}")
+        print(f"[admin-bot] reply for chat_id={chat_id}: {self._redact_text(reply)}")
         if reply:
             self._safe_send_message(chat_id, reply)
 
@@ -1260,9 +1261,10 @@ class TelegramAdminBot:
                 self.db.set_user_role(user_id, "admin")
 
     def _redact_text(self, text: str) -> str:
-        if "oauth_done_" in text:
-            return text.replace("oauth_done_", "oauth_done_[REDACTED]")
-        return text
+        redacted = re.sub(r"(oauth_done_)[^\s]+", r"\1[REDACTED]", text)
+        redacted = re.sub(r"(?i)\b(access_token|refresh_token|link_token)=([^\s]+)", r"\1=[REDACTED]", redacted)
+        redacted = re.sub(r"(?i)\b(access_token|refresh_token|link_token)\s+([^\s]+)", r"\1 [REDACTED]", redacted)
+        return redacted
 
     def _maybe_apply_referral(self, chat_id: int, text: str) -> str | None:
         if not text.startswith("/start"):
@@ -2631,7 +2633,7 @@ class TelegramAdminBot:
                     reply = self._dispatch_callback(chat_id, data)
                 except Exception as exc:
                     reply = f"Ошибка: {exc}"
-        print(f"[admin-bot] reply for chat_id={chat_id}: {reply}")
+        print(f"[admin-bot] reply for chat_id={chat_id}: {self._redact_text(reply)}")
         if reply:
             self._safe_send_message(chat_id, reply)
 

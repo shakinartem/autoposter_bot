@@ -57,8 +57,8 @@ class SpgUtilsIntegrationTests(unittest.TestCase):
         self.db.sync_oauth_connections(
             [
                 OAuthConnection(
-                    connection_key="conn-123",
-                    platform="instagram",
+                    remote_connection_id="conn-123",
+                    provider="instagram",
                     telegram_user_id=44444,
                     account_name="demo instagram",
                     destination="@demo",
