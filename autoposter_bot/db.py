@@ -151,6 +151,7 @@ CREATE TABLE IF NOT EXISTS accounts (
 
 CREATE TABLE IF NOT EXISTS oauth_connections (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    connection_id TEXT NOT NULL UNIQUE,
     connection_key TEXT NOT NULL UNIQUE,
     owner_user_id INTEGER,
     telegram_user_id INTEGER,
@@ -158,11 +159,15 @@ CREATE TABLE IF NOT EXISTS oauth_connections (
     account_external_id TEXT,
     account_name TEXT,
     destination TEXT,
+    provider_user_id TEXT,
+    link_token TEXT,
     access_token TEXT,
     refresh_token TEXT,
     token_type TEXT,
     scope TEXT,
+    scopes TEXT,
     status TEXT NOT NULL DEFAULT 'active',
+    revoked INTEGER NOT NULL DEFAULT 0,
     expires_at TEXT,
     metadata_json TEXT NOT NULL DEFAULT '{}',
     synced_at TEXT,
@@ -225,6 +230,7 @@ class Database:
             self._migrate_users_table(connection)
             self._migrate_job_media_table(connection)
             self._migrate_accounts_table(connection)
+            self._migrate_oauth_connections_table(connection)
             self._migrate_jobs_table(connection)
             self._migrate_referral_events_table(connection)
             self._seed_default_plans(connection)
@@ -255,6 +261,23 @@ class Database:
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(accounts)").fetchall()}
         if "owner_user_id" not in columns:
             connection.execute("ALTER TABLE accounts ADD COLUMN owner_user_id INTEGER")
+
+    def _migrate_oauth_connections_table(self, connection: sqlite3.Connection) -> None:
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(oauth_connections)").fetchall()}
+        if "connection_id" not in columns:
+            connection.execute("ALTER TABLE oauth_connections ADD COLUMN connection_id TEXT")
+            connection.execute(
+                "UPDATE oauth_connections SET connection_id = connection_key WHERE connection_id IS NULL AND connection_key IS NOT NULL"
+            )
+        if "provider_user_id" not in columns:
+            connection.execute("ALTER TABLE oauth_connections ADD COLUMN provider_user_id TEXT")
+        if "link_token" not in columns:
+            connection.execute("ALTER TABLE oauth_connections ADD COLUMN link_token TEXT")
+        if "scopes" not in columns:
+            connection.execute("ALTER TABLE oauth_connections ADD COLUMN scopes TEXT")
+        if "revoked" not in columns:
+            connection.execute("ALTER TABLE oauth_connections ADD COLUMN revoked INTEGER NOT NULL DEFAULT 0")
+            connection.execute("UPDATE oauth_connections SET revoked = 0 WHERE revoked IS NULL")
 
     def _migrate_jobs_table(self, connection: sqlite3.Connection) -> None:
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(jobs)").fetchall()}
@@ -1208,23 +1231,32 @@ class Database:
         owner_user_id: int | None = None,
     ) -> int:
         now = datetime.utcnow().isoformat()
+        connection_id = self._oauth_connection_id(connection_data)
+        provider = connection_data.platform.lower()
+        scopes = connection_data.scopes or connection_data.scope
         with self.connect() as connection:
             existing = connection.execute(
-                "SELECT id FROM oauth_connections WHERE connection_key = ?",
-                (connection_data.connection_key,),
+                "SELECT id FROM oauth_connections WHERE connection_id = ? OR connection_key = ?",
+                (connection_id, connection_id),
             ).fetchone()
             update_values = (
+                connection_id,
+                connection_id,
                 owner_user_id,
                 connection_data.telegram_user_id,
-                connection_data.platform.lower(),
+                provider,
                 connection_data.account_external_id,
                 connection_data.account_name,
                 connection_data.destination,
+                connection_data.provider_user_id,
+                connection_data.link_token,
                 connection_data.access_token,
                 connection_data.refresh_token,
                 connection_data.token_type,
                 connection_data.scope,
+                scopes,
                 connection_data.status,
+                int(connection_data.revoked),
                 connection_data.expires_at,
                 json.dumps(connection_data.metadata, ensure_ascii=False),
                 connection_data.synced_at or now,
@@ -1233,51 +1265,62 @@ class Database:
                 connection.execute(
                     """
                     UPDATE oauth_connections
-                    SET owner_user_id = ?,
+                    SET connection_id = ?,
+                        connection_key = ?,
+                        owner_user_id = ?,
                         telegram_user_id = ?,
                         platform = ?,
                         account_external_id = ?,
                         account_name = ?,
                         destination = ?,
+                        provider_user_id = ?,
+                        link_token = ?,
                         access_token = ?,
                         refresh_token = ?,
                         token_type = ?,
                         scope = ?,
+                        scopes = ?,
                         status = ?,
+                        revoked = ?,
                         expires_at = ?,
                         metadata_json = ?,
                         synced_at = ?,
                         updated_at = ?
-                    WHERE connection_key = ?
+                    WHERE id = ?
                     """,
-                    update_values + (now, connection_data.connection_key),
+                    update_values + (now, int(existing["id"])),
                 )
                 return int(existing["id"])
 
             cursor = connection.execute(
                 """
                 INSERT INTO oauth_connections(
+                    connection_id,
+                    connection_key,
                     owner_user_id,
                     telegram_user_id,
                     platform,
                     account_external_id,
                     account_name,
                     destination,
+                    provider_user_id,
+                    link_token,
                     access_token,
                     refresh_token,
                     token_type,
                     scope,
+                    scopes,
                     status,
+                    revoked,
                     expires_at,
                     metadata_json,
                     synced_at,
                     created_at,
-                    updated_at,
-                    connection_key
+                    updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                update_values + (now, now, connection_data.connection_key),
+                update_values + (now, now),
             )
             return int(cursor.lastrowid)
 
@@ -1287,9 +1330,9 @@ class Database:
         platform: str | None = None,
     ) -> list[sqlite3.Row]:
         query = """
-            SELECT id, connection_key, owner_user_id, telegram_user_id, platform, account_external_id,
-                   account_name, destination, access_token, refresh_token, token_type, scope, status,
-                   expires_at, metadata_json, synced_at, created_at, updated_at
+            SELECT id, connection_id, connection_key, owner_user_id, telegram_user_id, platform, account_external_id,
+                   account_name, destination, provider_user_id, link_token, access_token, refresh_token, token_type,
+                   scope, scopes, status, revoked, expires_at, metadata_json, synced_at, created_at, updated_at
             FROM oauth_connections
         """
         clauses: list[str] = []
@@ -1312,13 +1355,13 @@ class Database:
         owner_user_id: int | None = None,
     ) -> sqlite3.Row | None:
         query = """
-            SELECT id, connection_key, owner_user_id, telegram_user_id, platform, account_external_id,
-                   account_name, destination, access_token, refresh_token, token_type, scope, status,
-                   expires_at, metadata_json, synced_at, created_at, updated_at
+            SELECT id, connection_id, connection_key, owner_user_id, telegram_user_id, platform, account_external_id,
+                   account_name, destination, provider_user_id, link_token, access_token, refresh_token, token_type,
+                   scope, scopes, status, revoked, expires_at, metadata_json, synced_at, created_at, updated_at
             FROM oauth_connections
-            WHERE connection_key = ?
+            WHERE (connection_id = ? OR connection_key = ?)
         """
-        params: list[Any] = [connection_key]
+        params: list[Any] = [connection_key, connection_key]
         if owner_user_id is not None:
             query += " AND owner_user_id = ?"
             params.append(owner_user_id)
@@ -1331,14 +1374,14 @@ class Database:
         owner_user_id: int | None = None,
     ) -> bool:
         now = datetime.utcnow().isoformat()
-        updates = ["status = 'revoked'", "updated_at = ?"]
-        params: list[Any] = [now, connection_key]
+        updates = ["status = 'revoked'", "revoked = 1", "updated_at = ?"]
+        params: list[Any] = [now, connection_key, connection_key]
         if owner_user_id is not None:
             updates.insert(0, "owner_user_id = ?")
             params.insert(0, owner_user_id)
         with self.connect() as connection:
             cursor = connection.execute(
-                f"UPDATE oauth_connections SET {', '.join(updates)} WHERE connection_key = ?",
+                f"UPDATE oauth_connections SET {', '.join(updates)} WHERE (connection_id = ? OR connection_key = ?)",
                 params,
             )
             return cursor.rowcount > 0
@@ -1353,6 +1396,7 @@ class Database:
         if not row:
             return False
         options = json.loads(row["options_json"] or "{}")
+        options["oauth_connection_id"] = connection_key
         options["oauth_connection_key"] = connection_key
         with self.connect() as connection:
             if owner_user_id is None:
@@ -1376,7 +1420,7 @@ class Database:
         if not row:
             return {}
         options = json.loads(row["options_json"] or "{}")
-        connection_key = options.get("oauth_connection_key")
+        connection_key = options.get("oauth_connection_id") or options.get("oauth_connection_key")
         if connection_key:
             oauth_row = self.get_oauth_connection(connection_key, owner_user_id=owner_user_id)
             if oauth_row:
@@ -1389,14 +1433,20 @@ class Database:
                     options.setdefault("token_type", oauth_row["token_type"])
                 if oauth_row["scope"]:
                     options.setdefault("scope", oauth_row["scope"])
+                if oauth_row["scopes"]:
+                    options.setdefault("scopes", oauth_row["scopes"])
                 if oauth_row["expires_at"]:
                     options.setdefault("expires_at", oauth_row["expires_at"])
                 options.setdefault("oauth_status", oauth_row["status"])
                 options.setdefault("oauth_platform", oauth_row["platform"])
+                options.setdefault("oauth_connection_id", oauth_row["connection_id"])
                 options.setdefault("oauth_connection_key", oauth_row["connection_key"])
                 options.setdefault("oauth_account_external_id", oauth_row["account_external_id"])
                 options.setdefault("oauth_account_name", oauth_row["account_name"])
                 options.setdefault("oauth_destination", oauth_row["destination"])
+                options.setdefault("oauth_provider_user_id", oauth_row["provider_user_id"])
+                options.setdefault("oauth_link_token", oauth_row["link_token"])
+                options.setdefault("oauth_revoked", int(oauth_row["revoked"] or 0))
                 if oauth_options:
                     existing_metadata = options.get("oauth_metadata")
                     if not isinstance(existing_metadata, dict):
@@ -1413,31 +1463,105 @@ class Database:
         synced = 0
         for connection_data in connections:
             self.upsert_oauth_connection(connection_data, owner_user_id=owner_user_id)
-            if owner_user_id is not None and connection_data.account_name:
-                existing = self.list_accounts(owner_user_id=owner_user_id)
-                matched = next(
-                    (
-                        row
-                        for row in existing
-                        if row["platform"] == connection_data.platform.lower()
-                        and (
-                            row["name"] == connection_data.account_name
-                            or (
-                                connection_data.destination is not None
-                                and row["destination"] == connection_data.destination
-                            )
-                        )
-                    ),
-                    None,
-                )
-                if matched:
-                    self.attach_oauth_connection_to_account(
-                        int(matched["id"]),
-                        connection_data.connection_key,
-                        owner_user_id=owner_user_id,
-                    )
+            if owner_user_id is not None:
+                self._sync_account_for_oauth_connection(connection_data, owner_user_id)
             synced += 1
         return synced
+
+    def _sync_account_for_oauth_connection(self, connection_data: OAuthConnection, owner_user_id: int) -> int | None:
+        if connection_data.status.lower() not in {"connected", "active"}:
+            return None
+        platform = self._local_platform_for_provider(connection_data.platform)
+        options = self._account_options_for_oauth_connection(connection_data)
+        account_id = self._find_account_for_oauth_connection(connection_data, owner_user_id, platform)
+        base_name = connection_data.account_name or connection_data.destination or connection_data.provider_user_id
+        if not base_name:
+            base_name = f"{platform}-{self._oauth_connection_id(connection_data)}"
+        if account_id is None:
+            name = self._unique_account_name(base_name, owner_user_id)
+            destination = connection_data.destination or connection_data.provider_user_id or ""
+            return self.add_account(
+                name=name,
+                platform=platform,
+                destination=destination,
+                options=options,
+                owner_user_id=owner_user_id,
+            )
+
+        self.attach_oauth_connection_to_account(account_id, self._oauth_connection_id(connection_data), owner_user_id=owner_user_id)
+        current_row = self.get_account(account_id, owner_user_id=owner_user_id)
+        if current_row:
+            updates: dict[str, Any] = {}
+            if not current_row["name"] and base_name:
+                updates["name"] = self._unique_account_name(base_name, owner_user_id)
+            if not current_row["destination"] and (connection_data.destination or connection_data.provider_user_id):
+                updates["destination"] = connection_data.destination or connection_data.provider_user_id
+            if updates:
+                self.update_account(account_id, owner_user_id=owner_user_id, **updates)
+        self.update_account(account_id, options=options, owner_user_id=owner_user_id)
+        return account_id
+
+    def _find_account_for_oauth_connection(
+        self,
+        connection_data: OAuthConnection,
+        owner_user_id: int,
+        platform: str,
+    ) -> int | None:
+        connection_id = self._oauth_connection_id(connection_data)
+        for row in self.list_accounts(owner_user_id=owner_user_id):
+            if row["platform"] != platform:
+                continue
+            options = json.loads(row["options_json"] or "{}")
+            if options.get("oauth_connection_id") == connection_id or options.get("oauth_connection_key") == connection_id:
+                return int(row["id"])
+            if connection_data.account_name and row["name"] == connection_data.account_name:
+                return int(row["id"])
+            if connection_data.destination and row["destination"] == connection_data.destination:
+                return int(row["id"])
+        return None
+
+    def _account_options_for_oauth_connection(self, connection_data: OAuthConnection) -> dict[str, Any]:
+        connection_id = self._oauth_connection_id(connection_data)
+        options: dict[str, Any] = {
+            "oauth_connection_id": connection_id,
+            "oauth_connection_key": connection_id,
+            "oauth_provider": connection_data.platform.lower(),
+            "oauth_status": connection_data.status,
+            "oauth_revoked": int(connection_data.revoked or 0),
+        }
+        if connection_data.provider_user_id:
+            options["oauth_provider_user_id"] = connection_data.provider_user_id
+        if connection_data.link_token:
+            options["oauth_link_token"] = connection_data.link_token
+        if connection_data.account_external_id:
+            options["oauth_account_external_id"] = connection_data.account_external_id
+        if connection_data.account_name:
+            options["oauth_account_name"] = connection_data.account_name
+        if connection_data.destination:
+            options["oauth_destination"] = connection_data.destination
+        if connection_data.scopes or connection_data.scope:
+            options["oauth_scopes"] = connection_data.scopes or connection_data.scope
+        if connection_data.metadata:
+            options["oauth_metadata"] = connection_data.metadata
+        return options
+
+    def _local_platform_for_provider(self, provider: str) -> str:
+        normalized = provider.lower()
+        if normalized == "meta":
+            return "instagram"
+        return normalized
+
+    def _oauth_connection_id(self, connection_data: OAuthConnection) -> str:
+        return str(connection_data.connection_id or connection_data.connection_key)
+
+    def _unique_account_name(self, base_name: str, owner_user_id: int) -> str:
+        existing_names = {str(row["name"]) for row in self.list_accounts(owner_user_id=owner_user_id)}
+        if base_name not in existing_names:
+            return base_name
+        suffix = 2
+        while f"{base_name} #{suffix}" in existing_names:
+            suffix += 1
+        return f"{base_name} #{suffix}"
 
     def create_job(
         self,

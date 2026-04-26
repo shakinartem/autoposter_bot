@@ -59,6 +59,11 @@ class OAuthConnection:
     expires_at: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     synced_at: str | None = None
+    connection_id: str | None = None
+    provider_user_id: str | None = None
+    link_token: str | None = None
+    scopes: str | None = None
+    revoked: int = 0
 
     @property
     def is_active(self) -> bool:

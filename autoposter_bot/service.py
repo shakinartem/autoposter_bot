@@ -42,6 +42,12 @@ class AutoposterService:
                 resolved_options = self.db.resolve_account_options(int(target.account_id), owner_user_id=owner_user_id)
                 merged_options = dict(resolved_options)
                 merged_options.update(target.options)
+                merged_options = self._hydrate_publish_options(
+                    account_id=int(target.account_id),
+                    platform=target.platform,
+                    options=merged_options,
+                    owner_user_id=owner_user_id,
+                )
                 effective_target = Target(
                     platform=target.platform,
                     destination=target.destination,
@@ -63,11 +69,103 @@ class AutoposterService:
             results.append(publisher.publish(job, effective_target, dry_run=dry_run))
         return results
 
+    def start_oauth_link(self, telegram_user_id: int, telegram_chat_id: int, provider: str) -> dict:
+        return self.spgutils.start_link(telegram_user_id, telegram_chat_id, provider)
+
+    def get_oauth_link_result(self, link_token: str) -> dict:
+        return self.spgutils.get_link_result(link_token)
+
     def sync_oauth_connections_for_user(self, owner_user_id: int) -> int:
         user = self.db.get_user(owner_user_id)
         telegram_user_id = int(user["telegram_user_id"]) if user else None
+        if telegram_user_id is None:
+            return 0
         connections = self.spgutils.list_connections(telegram_user_id=telegram_user_id)
         return self.db.sync_oauth_connections(connections, owner_user_id=owner_user_id)
 
     def list_oauth_connections_for_user(self, owner_user_id: int):
         return self.db.list_oauth_connections(owner_user_id=owner_user_id)
+
+    def _hydrate_publish_options(
+        self,
+        *,
+        account_id: int,
+        platform: str,
+        options: dict,
+        owner_user_id: int | None,
+    ) -> dict:
+        connection_id = options.get("oauth_connection_id") or options.get("oauth_connection_key")
+        if not connection_id:
+            return options
+        hydrated = dict(options)
+        token_payload = self.spgutils.get_connection_token(str(connection_id))
+        hydrated.update(self._extract_token_options(token_payload))
+        provider = str(hydrated.get("oauth_provider") or hydrated.get("provider") or platform).lower()
+        local_platform = self._local_platform_for_provider(provider or platform)
+        if local_platform == "instagram":
+            page_id = (
+                hydrated.get("meta_page_id")
+                or hydrated.get("page_id")
+                or hydrated.get("oauth_provider_user_id")
+                or hydrated.get("oauth_account_external_id")
+            )
+            if page_id is not None:
+                page_payload = self.spgutils.get_meta_page(str(page_id), str(connection_id))
+                hydrated.update(self._extract_meta_page_options(page_payload))
+        return hydrated
+
+    def _extract_token_options(self, payload: dict) -> dict:
+        sources: list[dict] = [payload]
+        for key in ("data", "connection", "token", "result"):
+            value = payload.get(key)
+            if isinstance(value, dict):
+                sources.append(value)
+        options: dict[str, object] = {}
+        for source in sources:
+            for key in ("access_token", "refresh_token", "token_type", "scope", "scopes", "expires_at", "expires_in"):
+                value = source.get(key)
+                if value is not None and key not in options:
+                    options[key] = value
+        if "scope" in options and "scopes" not in options:
+            options["scopes"] = options["scope"]
+        return options
+
+    def _extract_meta_page_options(self, payload: dict) -> dict:
+        sources: list[dict] = [payload]
+        for key in ("data", "page", "connection", "result"):
+            value = payload.get(key)
+            if isinstance(value, dict):
+                sources.append(value)
+        options: dict[str, object] = {}
+        for source in sources:
+            for key in (
+                "page_id",
+                "meta_page_id",
+                "ig_user_id",
+                "instagram_user_id",
+                "page_access_token",
+                "access_token",
+                "username",
+                "name",
+                "destination",
+            ):
+                value = source.get(key)
+                if value is not None and key not in options:
+                    options[key] = value
+        if "page_access_token" in options and "access_token" not in options:
+            options["access_token"] = options["page_access_token"]
+        if "meta_page_id" not in options and options.get("page_id") is not None:
+            options["meta_page_id"] = options["page_id"]
+        if "ig_user_id" not in options and options.get("instagram_user_id") is not None:
+            options["ig_user_id"] = options["instagram_user_id"]
+        if "destination" not in options:
+            destination = options.get("username") or options.get("name")
+            if destination is not None:
+                options["destination"] = destination
+        return options
+
+    def _local_platform_for_provider(self, provider: str) -> str:
+        provider = provider.lower()
+        if provider == "meta":
+            return "instagram"
+        return provider

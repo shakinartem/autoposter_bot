@@ -120,7 +120,7 @@ def main() -> None:
         for row in rows:
             print(
                 f"[{row['id']}] {row['platform']} | {row['account_name'] or '-'} | "
-                f"{row['destination'] or '-'} | {row['status']} | key={row['connection_key']}"
+                f"{row['destination'] or '-'} | {row['status']} | id={row['connection_id'] or row['connection_key']}"
             )
         return
 
