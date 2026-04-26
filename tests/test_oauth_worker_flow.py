@@ -195,13 +195,85 @@ class OAuthWorkerFlowTests(unittest.TestCase):
 
         reply = bot._handle_oauth_done_start_payload(42, "/start oauth_done_link-abc")
 
-        self.assertEqual(reply, "Аккаунт подключён.")
+        self.assertEqual(reply, "Аккаунт успешно подключён.")
         rows = self.db.list_accounts(owner_user_id=owner_user_id)
         self.assertEqual(len(rows), 1)
         options = self.db.resolve_account_options(int(rows[0]["id"]), owner_user_id=owner_user_id)
         self.assertEqual(options["oauth_connection_id"], "7")
         self.assertEqual(options["oauth_provider"], "tiktok")
         self.assertGreaterEqual(len(sent_messages), 1)
+
+    def test_start_oauth_done_deeplink_through_update(self) -> None:
+        user = self.db.ensure_user(66666, "oauth_user2", "OAuth User 2")
+        owner_user_id = int(user["id"])
+        bot = TelegramAdminBot.__new__(TelegramAdminBot)
+        bot.db = self.db
+        bot.service = FakeLinkService(
+            {
+                "ok": True,
+                "link": {
+                    "link_token": "link-xyz",
+                    "provider": "meta",
+                    "telegram_user_id": "66666",
+                    "status": "connected",
+                    "connection_id": 17,
+                },
+                "connection": {
+                    "id": 17,
+                    "provider": "meta",
+                    "provider_user_id": "page-17",
+                    "telegram_user_id": "66666",
+                    "link_token": "link-xyz",
+                    "scopes": "pages_show_list",
+                    "revoked": 0,
+                    "account_name": "Demo Page",
+                    "destination": "@demo_page",
+                },
+            }
+        )
+        bot.chat_user_ids = {42: owner_user_id}
+        bot.sessions = {}
+        bot.ui_message_ids = {}
+        bot.ui_edit_targets = {}
+        bot._is_allowed = lambda user_id: True
+        reset_calls: list[int] = []
+        main_menu_calls: list[int] = []
+        sent_messages: list[tuple[str, dict]] = []
+        bot._reset_session = lambda chat_id: reset_calls.append(chat_id)
+        bot._send_main_menu = lambda chat_id: main_menu_calls.append(chat_id)
+        bot._safe_send_message = lambda chat_id, text, reply_markup=None, ui=False: sent_messages.append(
+            (
+                str(text),
+                {
+                    "chat_id": chat_id,
+                    "reply_markup": reply_markup,
+                    "ui": ui,
+                },
+            )
+        )
+
+        bot._handle_update(
+            {
+                "update_id": 1,
+                "message": {
+                    "message_id": 11,
+                    "date": 1710000000,
+                    "chat": {"id": 42},
+                    "from": {"id": 66666, "username": "oauth_user2", "first_name": "OAuth"},
+                    "text": "/start oauth_done_link-xyz",
+                },
+            }
+        )
+
+        self.assertEqual(reset_calls, [])
+        self.assertEqual(main_menu_calls, [])
+        self.assertGreaterEqual(len(sent_messages), 2)
+        self.assertTrue(any("Аккаунт успешно подключён" in message for message, _ in sent_messages))
+        rows = self.db.list_accounts(owner_user_id=owner_user_id)
+        self.assertEqual(len(rows), 1)
+        options = self.db.resolve_account_options(int(rows[0]["id"]), owner_user_id=owner_user_id)
+        self.assertEqual(options["oauth_connection_id"], "17")
+        self.assertEqual(options["oauth_provider"], "meta")
 
     def test_sync_connections_by_telegram_user_id(self) -> None:
         user = self.db.ensure_user(44444, "sync_user", "Sync User")

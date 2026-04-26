@@ -224,6 +224,10 @@ class TelegramAdminBot:
 
     def _dispatch_command(self, text: str, received_at: datetime, chat_id: int) -> str | None:
         if text.startswith("/start") or text.startswith("/menu") or text.startswith("/help"):
+            if text.startswith("/start "):
+                oauth_reply = self._handle_oauth_done_start_payload(chat_id, text)
+                if oauth_reply is not None:
+                    return oauth_reply
             self._reset_session(chat_id)
             self._send_main_menu(chat_id)
             return None
@@ -1363,7 +1367,7 @@ class TelegramAdminBot:
                 connection.telegram_user_id = int(telegram_user_id)
             self.db.sync_oauth_connections([connection], owner_user_id=self._current_user_id(chat_id))
         self._send_accounts_menu(chat_id)
-        return "Аккаунт подключён."
+        return "Аккаунт успешно подключён."
 
     def _accounts_for_platform(self, platform: str, chat_id: int) -> list:
         return [
