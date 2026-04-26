@@ -1,6 +1,6 @@
 # Autoposter Bot
 
-Локальный Python-бот для автопостинга в несколько соцсетей с базой аккаунтов, расписанием, Telegram-админкой, Cloudinary для Instagram-медиа и контролем срока жизни токенов VK/Instagram.
+Локальный Python-бот для автопостинга в несколько соцсетей с базой аккаунтов, расписанием, Telegram-админкой, Cloudinary для Instagram-медиа и интеграцией OAuth через Cloudflare Worker.
 
 ## Что умеет
 
@@ -12,6 +12,12 @@
 - `SQLite`: аккаунты, задания, медиа и расписание
 - `Telegram admin bot`: добавление аккаунтов в БД, тестовые публикации и обновление токенов
 - `Token warning`: напоминание по VK за 1 час и по Instagram за 24 часа до истечения
+
+## Архитектура
+
+- `spgutils.ru` - review/legal layer
+- `api.spgutils.ru` - OAuth, D1, токены и connections API
+- `Telegram bot` - основной интерфейс автопостера, scheduler и publishers
 
 ## Установка
 
@@ -27,11 +33,15 @@ py -m pip install -e .
 
 - `TELEGRAM_BOT_TOKEN`
 - `VK_TOKEN`
+- `SPGUTILS_API_BASE_URL=https://api.spgutils.ru`
+- `SPGUTILS_API_TOKEN`
+- `SPGUTILS_TIMEOUT_SECONDS=20`
+
+Legacy fallback values for manual publishing only:
+
 - `INSTAGRAM_IG_USER_ID`
 - `INSTAGRAM_ACCESS_TOKEN`
 - `TIKTOK_ACCESS_TOKEN`
-
-These are legacy fallback values. The primary flow is now Telegram OAuth linking through `api.spgutils.ru`.
 
 Для Telegram-админки:
 
@@ -68,7 +78,7 @@ autoposter admin-bot
 
 ## OAuth Flow via Worker
 
-The preferred account-linking flow now goes through `api.spgutils.ru`:
+The preferred account-linking flow goes through `api.spgutils.ru`:
 
 1. In Telegram, open `Аккаунты` and press `Connect TikTok` or `Connect Meta / Instagram`.
 2. The bot calls `POST /api/link/start` on the Worker.
@@ -76,7 +86,7 @@ The preferred account-linking flow now goes through `api.spgutils.ru`:
 4. The user authorizes in the browser and the Worker redirects back to Telegram with `oauth_done_<link_token>`.
 5. The bot resolves the link result, stores the connection locally, and uses the Worker token API before publishing.
 
-Manual `INSTAGRAM_ACCESS_TOKEN` / `TIKTOK_ACCESS_TOKEN` values are still supported as a fallback, but they are no longer the primary linking path.
+Manual `INSTAGRAM_ACCESS_TOKEN` / `TIKTOK_ACCESS_TOKEN` values are still supported only as a fallback for legacy or manual publishing setups.
 
 ## Telegram-админка
 

@@ -28,7 +28,7 @@ class SpgUtilsClient:
         self.http = requests.Session()
 
     def is_configured(self) -> bool:
-        return bool(self.base_url)
+        return bool(self.base_url and self.api_token)
 
     def start_oauth_link(
         self,

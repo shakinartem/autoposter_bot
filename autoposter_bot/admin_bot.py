@@ -383,6 +383,9 @@ class TelegramAdminBot:
                 self._send_platform_choice_menu(chat_id, prefix="acct|add")
                 return None
             platform = parts[2]
+            if platform in {"tiktok", "instagram"}:
+                provider = "meta" if platform == "instagram" else "tiktok"
+                return self._start_oauth_link(chat_id, provider)
             self.sessions[chat_id] = {"flow": "account_add", "platform": platform, "step": "name"}
             return f"Введите название аккаунта для {self._platform_label(platform)}."
         if action == "delete":
@@ -605,6 +608,9 @@ class TelegramAdminBot:
         self._reset_session(chat_id)
         self._send_accounts_menu(chat_id)
         return f"Добавлен аккаунт #{account_id} для {self._platform_label(session['platform'])}."
+
+    def _oauth_linking_not_configured_message(self) -> str:
+        return "OAuth-подключение не настроено. Проверьте SPGUTILS_API_BASE_URL и SPGUTILS_API_TOKEN."
 
     def _handle_edit_account_message(self, chat_id: int, message: dict, received_at: datetime) -> str:
         session = self.sessions[chat_id]
@@ -912,7 +918,7 @@ class TelegramAdminBot:
             reply_markup=self._keyboard(
                 [
                     [("Telegram", f"{prefix}|telegram"), ("VK", f"{prefix}|vk")],
-                    [("Instagram", f"{prefix}|instagram"), ("TikTok", f"{prefix}|tiktok")],
+                    [("Instagram OAuth", f"{prefix}|instagram"), ("TikTok OAuth", f"{prefix}|tiktok")],
                     [("Назад", "menu|accounts")],
                 ]
             ),
@@ -1264,7 +1270,9 @@ class TelegramAdminBot:
             if user and user["role"] != "admin":
                 self.db.set_user_role(user_id, "admin")
 
-    def _redact_text(self, text: str) -> str:
+    def _redact_text(self, text: str | None) -> str:
+        if text is None:
+            return "None"
         redacted = re.sub(r"(oauth_done_)[^\s]+", r"\1[REDACTED]", text)
         redacted = re.sub(r"(?i)\b(access_token|refresh_token|link_token)=([^\s]+)", r"\1=[REDACTED]", redacted)
         redacted = re.sub(r"(?i)\b(access_token|refresh_token|link_token)\s+([^\s]+)", r"\1 [REDACTED]", redacted)
@@ -2246,20 +2254,27 @@ class TelegramAdminBot:
             ui=True,
         )
 
-    def _start_oauth_link(self, chat_id: int, provider: str) -> None:
+    def _start_oauth_link(self, chat_id: int, provider: str) -> str | None:
         provider = provider.strip().lower()
         if provider not in {"tiktok", "meta"}:
             raise ValueError(f"Unsupported OAuth provider: {provider}")
+        if not self.settings.spgutils_api_base_url or not self.settings.spgutils_api_token:
+            return self._oauth_linking_not_configured_message()
         user_id = self._current_user_id(chat_id)
         result = self.service.start_oauth_link(user_id, chat_id, provider)
         auth_url = result.get("auth_url")
         link_token = result.get("link_token")
         if not auth_url or not link_token:
             raise ValueError("Worker did not return auth_url/link_token")
-        button_label = "Authorize TikTok" if provider == "tiktok" else "Authorize Meta"
+        if provider == "tiktok":
+            button_label = "Подключить TikTok"
+            message = "Нажмите кнопку ниже, чтобы подключить TikTok через OAuth."
+        else:
+            button_label = "Подключить Instagram"
+            message = "Нажмите кнопку ниже, чтобы подключить Instagram/Meta через OAuth."
         self._safe_send_message(
             chat_id,
-            "Откройте авторизацию по кнопке ниже.",
+            message,
             reply_markup=self._keyboard(
                 [
                     [(button_label, "url", str(auth_url))],
@@ -3074,7 +3089,7 @@ class TelegramAdminBot:
             reply_markup=self._keyboard(
                 [
                     [("Telegram", f"{prefix}|telegram"), ("VK", f"{prefix}|vk")],
-                    [("Instagram", f"{prefix}|instagram"), ("TikTok", f"{prefix}|tiktok")],
+                    [("Instagram OAuth", f"{prefix}|instagram"), ("TikTok OAuth", f"{prefix}|tiktok")],
                     [("Назад", "menu|accounts")],
                 ]
             ),
@@ -3977,8 +3992,8 @@ class TelegramAdminBot:
                     "1. Как подключить аккаунты",
                     "• Telegram: откройте «Аккаунты» → «Добавить», выберите Telegram и укажите @канал или chat_id. Бот должен быть админом канала.",
                     "• VK: выберите VK и укажите owner_id сообщества или страницы. Для публикации нужен рабочий VK token.",
-                    "• Instagram: выберите Instagram и укажите username. Для публикации должны быть настроены ig_user_id и access token.",
-                    "• TikTok: выберите TikTok и укажите username. Нужен access token и доступность upload-хостов.",
+                    "• Instagram: выберите Instagram OAuth и пройдите авторизацию через Worker.",
+                    "• TikTok: выберите TikTok OAuth и пройдите авторизацию через Worker.",
                     "",
                     "2. Как отправить пост",
                     "• Нажмите «Создать пост»",

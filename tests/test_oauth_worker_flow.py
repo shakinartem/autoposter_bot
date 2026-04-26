@@ -77,6 +77,38 @@ class OAuthWorkerFlowTests(unittest.TestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self.tempdir, ignore_errors=True)
 
+    def _build_oauth_add_bot(self, user_id: int = 12345) -> tuple[TelegramAdminBot, Mock, list[tuple[str, dict]]]:
+        bot = TelegramAdminBot.__new__(TelegramAdminBot)
+        bot.db = self.db
+        bot.settings = Mock(
+            spgutils_api_base_url="https://api.spgutils.ru",
+            spgutils_api_token="worker-token",
+        )
+        service = Mock()
+        service.start_oauth_link.return_value = {
+            "ok": True,
+            "provider": "tiktok",
+            "link_token": "link-123",
+            "auth_url": "https://api.spgutils.ru/api/oauth/tiktok/start",
+        }
+        bot.service = service
+        bot.chat_user_ids = {42: user_id}
+        bot.sessions = {}
+        bot.ui_message_ids = {}
+        bot.ui_edit_targets = {}
+        sent_messages: list[tuple[str, dict]] = []
+        bot._safe_send_message = lambda chat_id, text, reply_markup=None, ui=False: sent_messages.append(
+            (
+                str(text),
+                {
+                    "chat_id": chat_id,
+                    "reply_markup": reply_markup,
+                    "ui": ui,
+                },
+            )
+        )
+        return bot, service, sent_messages
+
     def test_start_oauth_link(self) -> None:
         client = SpgUtilsClient("https://api.spgutils.ru", "worker-token", timeout_seconds=20)
         response = Mock()
@@ -202,6 +234,59 @@ class OAuthWorkerFlowTests(unittest.TestCase):
         self.assertEqual(options["oauth_connection_id"], "7")
         self.assertEqual(options["oauth_provider"], "tiktok")
         self.assertGreaterEqual(len(sent_messages), 1)
+
+    def test_add_tiktok_account_starts_oauth_link(self) -> None:
+        bot, service, sent_messages = self._build_oauth_add_bot()
+
+        reply = bot._dispatch_account_callback(42, ["acct", "add", "tiktok"])
+
+        self.assertIsNone(reply)
+        service.start_oauth_link.assert_called_once_with(12345, 42, "tiktok")
+        self.assertEqual(bot.sessions, {})
+        self.assertTrue(any("TikTok через OAuth" in message for message, _ in sent_messages))
+        self.assertTrue(any("Подключить TikTok" in str(payload["reply_markup"]) for _, payload in sent_messages))
+        self.assertTrue(all("Введите название аккаунта" not in message for message, _ in sent_messages))
+
+    def test_add_instagram_account_starts_meta_oauth_link(self) -> None:
+        bot, service, sent_messages = self._build_oauth_add_bot()
+
+        reply = bot._dispatch_account_callback(42, ["acct", "add", "instagram"])
+
+        self.assertIsNone(reply)
+        service.start_oauth_link.assert_called_once_with(12345, 42, "meta")
+        self.assertEqual(bot.sessions, {})
+        self.assertTrue(any("Instagram/Meta через OAuth" in message for message, _ in sent_messages))
+        self.assertTrue(any("Подключить Instagram" in str(payload["reply_markup"]) for _, payload in sent_messages))
+        self.assertTrue(all("Введите название аккаунта" not in message for message, _ in sent_messages))
+
+    def test_tiktok_does_not_ask_for_manual_account_name(self) -> None:
+        bot, service, sent_messages = self._build_oauth_add_bot()
+
+        bot._dispatch_account_callback(42, ["acct", "add", "tiktok"])
+
+        self.assertEqual(service.start_oauth_link.call_count, 1)
+        self.assertEqual(bot.sessions, {})
+        self.assertTrue(all("Введите название аккаунта" not in message for message, _ in sent_messages))
+
+    def test_instagram_does_not_ask_for_manual_account_name(self) -> None:
+        bot, service, sent_messages = self._build_oauth_add_bot()
+
+        bot._dispatch_account_callback(42, ["acct", "add", "instagram"])
+
+        self.assertEqual(service.start_oauth_link.call_count, 1)
+        self.assertEqual(bot.sessions, {})
+        self.assertTrue(all("Введите название аккаунта" not in message for message, _ in sent_messages))
+
+    def test_oauth_add_shows_config_error_when_worker_not_configured(self) -> None:
+        bot, service, sent_messages = self._build_oauth_add_bot()
+        bot.settings = Mock(spgutils_api_base_url="https://api.spgutils.ru", spgutils_api_token=None)
+
+        reply = bot._dispatch_account_callback(42, ["acct", "add", "tiktok"])
+
+        self.assertEqual(reply, "OAuth-подключение не настроено. Проверьте SPGUTILS_API_BASE_URL и SPGUTILS_API_TOKEN.")
+        self.assertEqual(service.start_oauth_link.call_count, 0)
+        self.assertEqual(bot.sessions, {})
+        self.assertEqual(sent_messages, [])
 
     def test_start_oauth_done_deeplink_through_update(self) -> None:
         user = self.db.ensure_user(66666, "oauth_user2", "OAuth User 2")
