@@ -283,3 +283,15 @@ Phase 0 не должен содержать:
 - без изменений публикационного flow;
 - с отдельными тестами на схему и регрессию.
 
+## Implemented in Phase 0
+
+- Таблицы `video_posts`, `video_assets`, `video_targets`, `video_publication_attempts` добавлены в `autoposter_bot/db.py`
+- Индексы `idx_video_posts_external_post_id`, `idx_video_posts_owner_status_schedule`, `idx_video_assets_post_order`, `idx_video_assets_post_type`, `idx_video_targets_post_account`, `idx_video_targets_post`, `idx_video_targets_account`, `idx_video_attempts_target_attempt`, `idx_video_attempts_status_retry`, `idx_video_attempts_post_target` добавлены
+- Создан новый тест `tests/test_video_core_schema.py` который проверяет:
+  - создание новых таблиц
+  - существование ключевых колонок
+  - создание индексов
+  - повторную инициализацию БД без ошибок
+  - доступность старых таблиц `jobs`, `job_media`, `job_targets`, `publish_events`
+- Новая структура пока НЕ подключена к реальной публикации и существует параллельно с существующей системой
+- Старый flow публикации остался неизменным
