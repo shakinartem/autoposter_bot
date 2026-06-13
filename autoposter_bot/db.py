@@ -249,6 +249,7 @@ CREATE TABLE IF NOT EXISTS video_targets (
     account_id INTEGER NOT NULL,
     platform TEXT NOT NULL,
     destination TEXT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
     options_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -314,6 +315,7 @@ class Database:
             self._migrate_oauth_connections_table(connection)
             self._migrate_jobs_table(connection)
             self._migrate_referral_events_table(connection)
+            self._migrate_video_targets_table(connection)
             self._seed_default_plans(connection)
 
     def _migrate_users_table(self, connection: sqlite3.Connection) -> None:
@@ -384,6 +386,11 @@ class Database:
                 (reward_amount, int(row["id"])),
             )
             counts[referrer_user_id] = counts.get(referrer_user_id, 0) + 1
+
+    def _migrate_video_targets_table(self, connection: sqlite3.Connection) -> None:
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(video_targets)").fetchall()}
+        if "status" not in columns:
+            connection.execute("ALTER TABLE video_targets ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'")
 
     def _seed_default_plans(self, connection: sqlite3.Connection) -> None:
         defaults = [
@@ -1874,6 +1881,275 @@ class Database:
         while f"{base_name} #{suffix}" in existing_names:
             suffix += 1
         return f"{base_name} #{suffix}"
+
+    # ---------------------------------------------------------------------------
+    # Video Core CRUD
+    # ---------------------------------------------------------------------------
+
+    def create_video_post(
+        self,
+        *,
+        external_post_id: str,
+        text: str,
+        title: str | None = None,
+        owner_user_id: int | None = None,
+        status: str = "draft",
+        scheduled_at: str | None = None,
+        published_at: str | None = None,
+        metadata: dict | None = None,
+    ) -> int:
+        """Create a new video post record."""
+        now = datetime.utcnow().isoformat()
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO video_posts(
+                    owner_user_id, external_post_id, title, text, status,
+                    scheduled_at, published_at, metadata_json, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    owner_user_id,
+                    external_post_id,
+                    title,
+                    text,
+                    status,
+                    scheduled_at,
+                    published_at,
+                    json.dumps(metadata or {}, ensure_ascii=False),
+                    now,
+                    now,
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def get_video_post(self, post_id: int) -> sqlite3.Row | None:
+        """Get a video post by its primary key id."""
+        with self.connect() as connection:
+            return connection.execute(
+                "SELECT * FROM video_posts WHERE id = ?",
+                (post_id,),
+            ).fetchone()
+
+    def update_video_post_status(
+        self,
+        post_id: int,
+        status: str,
+        updated_at: str | None = None,
+    ) -> bool:
+        """Update the status of a video post."""
+        with self.connect() as connection:
+            now = updated_at or datetime.utcnow().isoformat()
+            cursor = connection.execute(
+                "UPDATE video_posts SET status = ?, updated_at = ? WHERE id = ?",
+                (status, now, post_id),
+            )
+            return cursor.rowcount > 0
+
+    def list_video_posts_by_status(
+        self,
+        status: str,
+        limit: int = 50,
+    ) -> list[sqlite3.Row]:
+        """List video posts filtered by status."""
+        with self.connect() as connection:
+            return list(
+                connection.execute(
+                    "SELECT * FROM video_posts WHERE status = ? ORDER BY created_at DESC LIMIT ?",
+                    (status, limit),
+                ).fetchall()
+            )
+
+    def create_video_asset(
+        self,
+        *,
+        post_id: int,
+        source: str,
+        media_type: str = "video",
+        order_index: int = 0,
+        original_filename: str | None = None,
+        file_size: int | None = None,
+        mime_type: str | None = None,
+        duration_seconds: float | None = None,
+        width: int | None = None,
+        height: int | None = None,
+        aspect_ratio: str | None = None,
+        cloudinary_public_id: str | None = None,
+        cloudinary_url: str | None = None,
+        processed: int = 0,
+        options: dict | None = None,
+    ) -> int:
+        """Create a new video asset record."""
+        now = datetime.utcnow().isoformat()
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO video_assets(
+                    post_id, source, media_type, order_index,
+                    original_filename, file_size, mime_type,
+                    duration_seconds, width, height, aspect_ratio,
+                    cloudinary_public_id, cloudinary_url, processed,
+                    options_json, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    post_id,
+                    source,
+                    media_type,
+                    order_index,
+                    original_filename,
+                    file_size,
+                    mime_type,
+                    duration_seconds,
+                    width,
+                    height,
+                    aspect_ratio,
+                    cloudinary_public_id,
+                    cloudinary_url,
+                    processed,
+                    json.dumps(options or {}, ensure_ascii=False),
+                    now,
+                    now,
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def list_video_assets(self, post_id: int) -> list[sqlite3.Row]:
+        """List all video assets for a given post, ordered by order_index."""
+        with self.connect() as connection:
+            return list(
+                connection.execute(
+                    "SELECT * FROM video_assets WHERE post_id = ? ORDER BY order_index, id",
+                    (post_id,),
+                ).fetchall()
+            )
+
+    def create_video_target(
+        self,
+        *,
+        post_id: int,
+        account_id: int,
+        platform: str,
+        destination: str | None = None,
+        options: dict | None = None,
+    ) -> int:
+        """Create a new video target record."""
+        now = datetime.utcnow().isoformat()
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO video_targets(
+                    post_id, account_id, platform, destination,
+                    options_json, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    post_id,
+                    account_id,
+                    platform.lower(),
+                    destination,
+                    json.dumps(options or {}, ensure_ascii=False),
+                    now,
+                    now,
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def list_video_targets(self, post_id: int) -> list[sqlite3.Row]:
+        """List all video targets for a given post."""
+        with self.connect() as connection:
+            return list(
+                connection.execute(
+                    "SELECT * FROM video_targets WHERE post_id = ? ORDER BY id",
+                    (post_id,),
+                ).fetchall()
+            )
+
+    def update_video_target_status(
+        self,
+        target_id: int,
+        status: str,
+        error_message: str | None = None,
+    ) -> bool:
+        """Update the status of a video target. Optionally store error detail in options_json."""
+        now = datetime.utcnow().isoformat()
+        with self.connect() as connection:
+            if error_message is not None:
+                row = connection.execute(
+                    "SELECT options_json FROM video_targets WHERE id = ?",
+                    (target_id,),
+                ).fetchone()
+                if row:
+                    opts = json.loads(row["options_json"] or "{}")
+                    opts["last_error"] = error_message
+                    connection.execute(
+                        "UPDATE video_targets SET status = ?, options_json = ?, updated_at = ? WHERE id = ?",
+                        (status, json.dumps(opts, ensure_ascii=False), now, target_id),
+                    )
+                    return True
+            cursor = connection.execute(
+                "UPDATE video_targets SET status = ?, updated_at = ? WHERE id = ?",
+                (status, now, target_id),
+            )
+            return cursor.rowcount > 0
+
+    def create_video_publication_attempt(
+        self,
+        *,
+        post_id: int,
+        target_id: int,
+        platform: str,
+        attempt_number: int = 1,
+        status: str = "started",
+        external_id: str | None = None,
+        error_code: str | None = None,
+        error_detail: str | None = None,
+        retry_at: str | None = None,
+        started_at: str | None = None,
+        finished_at: str | None = None,
+    ) -> int:
+        """Create a new video publication attempt record."""
+        now = datetime.utcnow().isoformat()
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO video_publication_attempts(
+                    post_id, target_id, platform, attempt_number, status,
+                    external_id, error_code, error_detail, retry_at,
+                    started_at, finished_at, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    post_id,
+                    target_id,
+                    platform.lower(),
+                    attempt_number,
+                    status,
+                    external_id,
+                    error_code,
+                    error_detail,
+                    retry_at,
+                    started_at or now,
+                    finished_at,
+                    now,
+                    now,
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def list_video_publication_attempts(self, target_id: int) -> list[sqlite3.Row]:
+        """List all publication attempts for a given target, ordered by attempt_number."""
+        with self.connect() as connection:
+            return list(
+                connection.execute(
+                    "SELECT * FROM video_publication_attempts WHERE target_id = ? ORDER BY attempt_number, id",
+                    (target_id,),
+                ).fetchall()
+            )
 
     def create_job(
         self,
