@@ -113,6 +113,7 @@ class VideoTarget:
     account_id: int = 0
     platform: str = ""
     destination: str | None = None
+    status: str = VideoTargetStatus.PENDING.value
     options_json: str = "{}"
     created_at: str = ""
     updated_at: str = ""
