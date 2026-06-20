@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator
 
-from autoposter_bot.models import MediaItem, PostJob, Target
+from autoposter_bot.models import MediaItem, OAuthConnection, PostJob, Target
 
 
 SCHEMA = """
@@ -149,6 +149,33 @@ CREATE TABLE IF NOT EXISTS accounts (
     FOREIGN KEY(owner_user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS oauth_connections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    connection_id TEXT NOT NULL UNIQUE,
+    connection_key TEXT NOT NULL UNIQUE,
+    owner_user_id INTEGER,
+    telegram_user_id INTEGER,
+    platform TEXT NOT NULL,
+    account_external_id TEXT,
+    account_name TEXT,
+    destination TEXT,
+    provider_user_id TEXT,
+    link_token TEXT,
+    access_token TEXT,
+    refresh_token TEXT,
+    token_type TEXT,
+    scope TEXT,
+    scopes TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
+    revoked INTEGER NOT NULL DEFAULT 0,
+    expires_at TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    synced_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(owner_user_id) REFERENCES users(id) ON DELETE SET NULL
+);
+
 CREATE TABLE IF NOT EXISTS jobs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     owner_user_id INTEGER,
@@ -179,6 +206,88 @@ CREATE TABLE IF NOT EXISTS job_targets (
     FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE,
     FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS video_posts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_user_id INTEGER NULL,
+    external_post_id TEXT NOT NULL UNIQUE,
+    title TEXT NULL,
+    text TEXT NOT NULL,
+    status TEXT NOT NULL,
+    scheduled_at TEXT NULL,
+    published_at TEXT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS video_assets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    post_id INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    media_type TEXT NOT NULL,
+    order_index INTEGER NOT NULL DEFAULT 0,
+    original_filename TEXT NULL,
+    file_size INTEGER NULL,
+    mime_type TEXT NULL,
+    duration_seconds REAL NULL,
+    width INTEGER NULL,
+    height INTEGER NULL,
+    aspect_ratio TEXT NULL,
+    cloudinary_public_id TEXT NULL,
+    cloudinary_url TEXT NULL,
+    processed INTEGER NOT NULL DEFAULT 0,
+    options_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(post_id) REFERENCES video_posts(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS video_targets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    post_id INTEGER NOT NULL,
+    account_id INTEGER NOT NULL,
+    platform TEXT NOT NULL,
+    destination TEXT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    options_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(post_id) REFERENCES video_posts(id) ON DELETE CASCADE,
+    FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE,
+    UNIQUE(post_id, account_id)
+);
+
+CREATE TABLE IF NOT EXISTS video_publication_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    post_id INTEGER NOT NULL,
+    target_id INTEGER NOT NULL,
+    platform TEXT NOT NULL,
+    attempt_number INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    external_id TEXT NULL,
+    error_code TEXT NULL,
+    error_detail TEXT NULL,
+    retry_at TEXT NULL,
+    started_at TEXT NULL,
+    finished_at TEXT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(post_id) REFERENCES video_posts(id) ON DELETE CASCADE,
+    FOREIGN KEY(target_id) REFERENCES video_targets(id) ON DELETE CASCADE,
+    UNIQUE(target_id, attempt_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_video_posts_external_post_id ON video_posts(external_post_id);
+CREATE INDEX IF NOT EXISTS idx_video_posts_owner_status_schedule ON video_posts(owner_user_id, status, scheduled_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_video_assets_post_order ON video_assets(post_id, order_index);
+CREATE INDEX IF NOT EXISTS idx_video_assets_post_type ON video_assets(post_id, media_type);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_video_targets_post_account ON video_targets(post_id, account_id);
+CREATE INDEX IF NOT EXISTS idx_video_targets_post ON video_targets(post_id);
+CREATE INDEX IF NOT EXISTS idx_video_targets_account ON video_targets(account_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_video_attempts_target_attempt ON video_publication_attempts(target_id, attempt_number);
+CREATE INDEX IF NOT EXISTS idx_video_attempts_status_retry ON video_publication_attempts(status, retry_at);
+CREATE INDEX IF NOT EXISTS idx_video_attempts_post_target ON video_publication_attempts(post_id, target_id);
 """
 
 
@@ -203,8 +312,10 @@ class Database:
             self._migrate_users_table(connection)
             self._migrate_job_media_table(connection)
             self._migrate_accounts_table(connection)
+            self._migrate_oauth_connections_table(connection)
             self._migrate_jobs_table(connection)
             self._migrate_referral_events_table(connection)
+            self._migrate_video_targets_table(connection)
             self._seed_default_plans(connection)
 
     def _migrate_users_table(self, connection: sqlite3.Connection) -> None:
@@ -234,6 +345,23 @@ class Database:
         if "owner_user_id" not in columns:
             connection.execute("ALTER TABLE accounts ADD COLUMN owner_user_id INTEGER")
 
+    def _migrate_oauth_connections_table(self, connection: sqlite3.Connection) -> None:
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(oauth_connections)").fetchall()}
+        if "connection_id" not in columns:
+            connection.execute("ALTER TABLE oauth_connections ADD COLUMN connection_id TEXT")
+            connection.execute(
+                "UPDATE oauth_connections SET connection_id = connection_key WHERE connection_id IS NULL AND connection_key IS NOT NULL"
+            )
+        if "provider_user_id" not in columns:
+            connection.execute("ALTER TABLE oauth_connections ADD COLUMN provider_user_id TEXT")
+        if "link_token" not in columns:
+            connection.execute("ALTER TABLE oauth_connections ADD COLUMN link_token TEXT")
+        if "scopes" not in columns:
+            connection.execute("ALTER TABLE oauth_connections ADD COLUMN scopes TEXT")
+        if "revoked" not in columns:
+            connection.execute("ALTER TABLE oauth_connections ADD COLUMN revoked INTEGER NOT NULL DEFAULT 0")
+            connection.execute("UPDATE oauth_connections SET revoked = 0 WHERE revoked IS NULL")
+
     def _migrate_jobs_table(self, connection: sqlite3.Connection) -> None:
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(jobs)").fetchall()}
         if "owner_user_id" not in columns:
@@ -258,6 +386,11 @@ class Database:
                 (reward_amount, int(row["id"])),
             )
             counts[referrer_user_id] = counts.get(referrer_user_id, 0) + 1
+
+    def _migrate_video_targets_table(self, connection: sqlite3.Connection) -> None:
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(video_targets)").fetchall()}
+        if "status" not in columns:
+            connection.execute("ALTER TABLE video_targets ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'")
 
     def _seed_default_plans(self, connection: sqlite3.Connection) -> None:
         defaults = [
@@ -1040,6 +1173,120 @@ class Database:
             )
             return int(cursor.lastrowid)
 
+    def upsert_meta_instagram_account(
+        self,
+        *,
+        owner_user_id: int,
+        remote_connection_id: str,
+        page_id: str | None = None,
+        page_name: str | None = None,
+        ig_user_id: str | None = None,
+        ig_username: str | None = None,
+    ) -> int:
+        options: dict[str, Any] = {
+            "remote_connection_id": remote_connection_id,
+            "oauth_connection_id": remote_connection_id,
+            "oauth_connection_key": remote_connection_id,
+            "oauth_provider": "meta",
+        }
+        if page_id is not None:
+            options["page_id"] = str(page_id)
+        if page_name is not None:
+            options["page_name"] = str(page_name)
+        if ig_user_id is not None:
+            options["ig_user_id"] = str(ig_user_id)
+        if ig_username is not None:
+            options["ig_username"] = str(ig_username)
+
+        account_id = self._find_meta_instagram_account(
+            owner_user_id=owner_user_id,
+            remote_connection_id=remote_connection_id,
+            page_id=page_id,
+            ig_user_id=ig_user_id,
+        )
+        name = page_name or ig_username or f"instagram-{remote_connection_id}"
+        destination = ig_username or page_name or ""
+        if account_id is None:
+            return self.add_account(
+                name=name,
+                platform="instagram",
+                destination=destination,
+                options=options,
+                owner_user_id=owner_user_id,
+            )
+
+        row = self.get_account(account_id, owner_user_id=owner_user_id)
+        current_options = json.loads(row["options_json"] or "{}") if row else {}
+        merged_options = {**current_options, **options}
+        updates: dict[str, Any] = {"options": merged_options}
+        if row and page_name and row["name"] != page_name:
+            updates["name"] = page_name
+        elif row and not row["name"]:
+            updates["name"] = name
+        if row and destination and row["destination"] != destination:
+            updates["destination"] = destination
+        self.update_account(account_id, owner_user_id=owner_user_id, **updates)
+        return account_id
+
+    def upsert_tiktok_account_profile(
+        self,
+        *,
+        owner_user_id: int,
+        remote_connection_id: str,
+        open_id: str | None = None,
+        display_name: str | None = None,
+        avatar_url: str | None = None,
+    ) -> int:
+        normalized_display_name = str(display_name).strip() if display_name is not None else ""
+        account_label = normalized_display_name or f"TikTok account {remote_connection_id}"
+        options: dict[str, Any] = {
+            "remote_connection_id": remote_connection_id,
+            "oauth_connection_id": remote_connection_id,
+            "oauth_connection_key": remote_connection_id,
+            "oauth_provider": "tiktok",
+            "display_name": normalized_display_name,
+        }
+        if open_id is not None:
+            normalized_open_id = str(open_id)
+            options["open_id"] = normalized_open_id
+            options["provider_user_id"] = normalized_open_id
+            options["oauth_provider_user_id"] = normalized_open_id
+        if avatar_url is not None:
+            options["avatar_url"] = str(avatar_url)
+
+        account_id = self._find_tiktok_account(
+            owner_user_id=owner_user_id,
+            remote_connection_id=remote_connection_id,
+            open_id=open_id,
+        )
+        if account_id is None:
+            account_id = self.add_account(
+                name=self._unique_account_name(account_label, owner_user_id),
+                platform="tiktok",
+                destination=account_label,
+                options=options,
+                owner_user_id=owner_user_id,
+            )
+        else:
+            row = self.get_account(account_id, owner_user_id=owner_user_id)
+            current_options = json.loads(row["options_json"] or "{}") if row else {}
+            merged_options = {**current_options, **options}
+            updates: dict[str, Any] = {
+                "name": account_label,
+                "destination": account_label,
+                "options": merged_options,
+            }
+            self.update_account(account_id, owner_user_id=owner_user_id, **updates)
+
+        self.update_oauth_connection_profile(
+            remote_connection_id,
+            owner_user_id=owner_user_id,
+            provider_user_id=str(open_id) if open_id is not None else None,
+            account_name=account_label,
+            destination=account_label,
+        )
+        return account_id
+
     def count_accounts_for_user(self, user_id: int, platform: str | None = None) -> int:
         with self.connect() as connection:
             if platform is None:
@@ -1180,6 +1427,730 @@ class Database:
                 updated += 1
             return updated
 
+    def upsert_oauth_connection(
+        self,
+        connection_data: OAuthConnection,
+        owner_user_id: int | None = None,
+    ) -> int:
+        now = datetime.utcnow().isoformat()
+        connection_id = self._oauth_connection_id(connection_data)
+        provider = connection_data.platform.lower()
+        scopes = connection_data.scopes or connection_data.scope
+        with self.connect() as connection:
+            existing = connection.execute(
+                "SELECT id FROM oauth_connections WHERE connection_id = ? OR connection_key = ?",
+                (connection_id, connection_id),
+            ).fetchone()
+            update_values = (
+                connection_id,
+                connection_id,
+                owner_user_id,
+                connection_data.telegram_user_id,
+                provider,
+                connection_data.account_external_id,
+                connection_data.account_name,
+                connection_data.destination,
+                connection_data.provider_user_id,
+                connection_data.link_token,
+                connection_data.access_token,
+                connection_data.refresh_token,
+                connection_data.token_type,
+                connection_data.scope,
+                scopes,
+                connection_data.status,
+                int(connection_data.revoked),
+                connection_data.expires_at,
+                json.dumps(connection_data.metadata, ensure_ascii=False),
+                connection_data.synced_at or now,
+            )
+            if existing:
+                connection.execute(
+                    """
+                    UPDATE oauth_connections
+                    SET connection_id = ?,
+                        connection_key = ?,
+                        owner_user_id = ?,
+                        telegram_user_id = ?,
+                        platform = ?,
+                        account_external_id = ?,
+                        account_name = ?,
+                        destination = ?,
+                        provider_user_id = ?,
+                        link_token = ?,
+                        access_token = ?,
+                        refresh_token = ?,
+                        token_type = ?,
+                        scope = ?,
+                        scopes = ?,
+                        status = ?,
+                        revoked = ?,
+                        expires_at = ?,
+                        metadata_json = ?,
+                        synced_at = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    update_values + (now, int(existing["id"])),
+                )
+                return int(existing["id"])
+
+            cursor = connection.execute(
+                """
+                INSERT INTO oauth_connections(
+                    connection_id,
+                    connection_key,
+                    owner_user_id,
+                    telegram_user_id,
+                    platform,
+                    account_external_id,
+                    account_name,
+                    destination,
+                    provider_user_id,
+                    link_token,
+                    access_token,
+                    refresh_token,
+                    token_type,
+                    scope,
+                    scopes,
+                    status,
+                    revoked,
+                    expires_at,
+                    metadata_json,
+                    synced_at,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                update_values + (now, now),
+            )
+            return int(cursor.lastrowid)
+
+    def list_oauth_connections(
+        self,
+        owner_user_id: int | None = None,
+        platform: str | None = None,
+    ) -> list[sqlite3.Row]:
+        query = """
+            SELECT id, connection_id, connection_key, owner_user_id, telegram_user_id, platform, account_external_id,
+                   account_name, destination, provider_user_id, link_token, access_token, refresh_token, token_type,
+                   scope, scopes, status, revoked, expires_at, metadata_json, synced_at, created_at, updated_at
+            FROM oauth_connections
+        """
+        clauses: list[str] = []
+        params: list[Any] = []
+        if owner_user_id is not None:
+            clauses.append("owner_user_id = ?")
+            params.append(owner_user_id)
+        if platform is not None:
+            clauses.append("platform = ?")
+            params.append(platform.lower())
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY platform, account_name, id"
+        with self.connect() as connection:
+            return list(connection.execute(query, params).fetchall())
+
+    def get_oauth_connection(
+        self,
+        connection_key: str,
+        owner_user_id: int | None = None,
+    ) -> sqlite3.Row | None:
+        query = """
+            SELECT id, connection_id, connection_key, owner_user_id, telegram_user_id, platform, account_external_id,
+                   account_name, destination, provider_user_id, link_token, access_token, refresh_token, token_type,
+                   scope, scopes, status, revoked, expires_at, metadata_json, synced_at, created_at, updated_at
+            FROM oauth_connections
+            WHERE (connection_id = ? OR connection_key = ?)
+        """
+        params: list[Any] = [connection_key, connection_key]
+        if owner_user_id is not None:
+            query += " AND owner_user_id = ?"
+            params.append(owner_user_id)
+        with self.connect() as connection:
+            return connection.execute(query, params).fetchone()
+
+    def get_latest_active_oauth_connection(
+        self,
+        *,
+        owner_user_id: int,
+        platform: str,
+        provider_user_id: str | None = None,
+    ) -> sqlite3.Row | None:
+        query = """
+            SELECT id, connection_id, connection_key, owner_user_id, telegram_user_id, platform, account_external_id,
+                   account_name, destination, provider_user_id, link_token, access_token, refresh_token, token_type,
+                   scope, scopes, status, revoked, expires_at, metadata_json, synced_at, created_at, updated_at
+            FROM oauth_connections
+            WHERE owner_user_id = ?
+              AND platform = ?
+              AND revoked = 0
+              AND lower(status) IN ('active', 'connected')
+        """
+        params: list[Any] = [owner_user_id, platform.lower()]
+        if provider_user_id is not None:
+            query += " AND provider_user_id = ?"
+            params.append(str(provider_user_id))
+        query += " ORDER BY id DESC, created_at DESC LIMIT 1"
+        with self.connect() as connection:
+            return connection.execute(query, params).fetchone()
+
+    def mark_oauth_connection_revoked(
+        self,
+        connection_key: str,
+        owner_user_id: int | None = None,
+    ) -> bool:
+        now = datetime.utcnow().isoformat()
+        updates = ["status = 'revoked'", "revoked = 1", "updated_at = ?"]
+        params: list[Any] = [now, connection_key, connection_key]
+        if owner_user_id is not None:
+            updates.insert(0, "owner_user_id = ?")
+            params.insert(0, owner_user_id)
+        with self.connect() as connection:
+            cursor = connection.execute(
+                f"UPDATE oauth_connections SET {', '.join(updates)} WHERE (connection_id = ? OR connection_key = ?)",
+                params,
+            )
+            return cursor.rowcount > 0
+
+    def attach_oauth_connection_to_account(
+        self,
+        account_id: int,
+        connection_key: str,
+        owner_user_id: int | None = None,
+    ) -> bool:
+        row = self.get_account(account_id, owner_user_id=owner_user_id)
+        if not row:
+            return False
+        options = json.loads(row["options_json"] or "{}")
+        options["oauth_connection_id"] = connection_key
+        options["oauth_connection_key"] = connection_key
+        with self.connect() as connection:
+            if owner_user_id is None:
+                cursor = connection.execute(
+                    "UPDATE accounts SET options_json = ? WHERE id = ?",
+                    (json.dumps(options, ensure_ascii=False), account_id),
+                )
+            else:
+                cursor = connection.execute(
+                    "UPDATE accounts SET options_json = ? WHERE id = ? AND owner_user_id = ?",
+                    (json.dumps(options, ensure_ascii=False), account_id, owner_user_id),
+                )
+            return cursor.rowcount > 0
+
+    def resolve_account_options(
+        self,
+        account_id: int,
+        owner_user_id: int | None = None,
+    ) -> dict[str, Any]:
+        row = self.get_account(account_id, owner_user_id=owner_user_id)
+        if not row:
+            return {}
+        options = json.loads(row["options_json"] or "{}")
+        connection_key = options.get("oauth_connection_id") or options.get("oauth_connection_key")
+        if connection_key:
+            oauth_row = self.get_oauth_connection(connection_key, owner_user_id=owner_user_id)
+            if oauth_row:
+                oauth_options = json.loads(oauth_row["metadata_json"] or "{}")
+                if oauth_row["access_token"]:
+                    options.setdefault("access_token", oauth_row["access_token"])
+                if oauth_row["refresh_token"]:
+                    options.setdefault("refresh_token", oauth_row["refresh_token"])
+                if oauth_row["token_type"]:
+                    options.setdefault("token_type", oauth_row["token_type"])
+                if oauth_row["scope"]:
+                    options.setdefault("scope", oauth_row["scope"])
+                if oauth_row["scopes"]:
+                    options.setdefault("scopes", oauth_row["scopes"])
+                if oauth_row["expires_at"]:
+                    options.setdefault("expires_at", oauth_row["expires_at"])
+                options.setdefault("oauth_status", oauth_row["status"])
+                options.setdefault("oauth_platform", oauth_row["platform"])
+                options.setdefault("oauth_connection_id", oauth_row["connection_id"])
+                options.setdefault("oauth_connection_key", oauth_row["connection_key"])
+                options.setdefault("oauth_account_external_id", oauth_row["account_external_id"])
+                options.setdefault("oauth_account_name", oauth_row["account_name"])
+                options.setdefault("oauth_destination", oauth_row["destination"])
+                options.setdefault("oauth_provider_user_id", oauth_row["provider_user_id"])
+                options.setdefault("oauth_link_token", oauth_row["link_token"])
+                options.setdefault("oauth_revoked", int(oauth_row["revoked"] or 0))
+                if oauth_options:
+                    existing_metadata = options.get("oauth_metadata")
+                    if not isinstance(existing_metadata, dict):
+                        existing_metadata = {}
+                    merged_metadata = {**oauth_options, **existing_metadata}
+                    options["oauth_metadata"] = merged_metadata
+        return options
+
+    def sync_oauth_connections(
+        self,
+        connections: list[OAuthConnection],
+        owner_user_id: int | None = None,
+    ) -> int:
+        synced = 0
+        for connection_data in connections:
+            if owner_user_id is not None:
+                connection_data.local_user_id = owner_user_id
+            self.upsert_oauth_connection(connection_data, owner_user_id=owner_user_id)
+            if owner_user_id is not None:
+                self._sync_account_for_oauth_connection(connection_data, owner_user_id)
+            synced += 1
+        return synced
+
+    def _sync_account_for_oauth_connection(self, connection_data: OAuthConnection, owner_user_id: int) -> int | None:
+        if connection_data.status.lower() not in {"connected", "active"}:
+            return None
+        platform = self._local_platform_for_provider(connection_data.platform)
+        options = self._account_options_for_oauth_connection(connection_data)
+        account_id = self._find_account_for_oauth_connection(connection_data, owner_user_id, platform)
+        base_name = connection_data.account_name or connection_data.destination or connection_data.provider_user_id
+        if not base_name:
+            base_name = f"{platform}-{self._oauth_connection_id(connection_data)}"
+        if account_id is None:
+            name = self._unique_account_name(base_name, owner_user_id)
+            destination = connection_data.destination or connection_data.provider_user_id or ""
+            return self.add_account(
+                name=name,
+                platform=platform,
+                destination=destination,
+                options=options,
+                owner_user_id=owner_user_id,
+            )
+
+        self.attach_oauth_connection_to_account(account_id, self._oauth_connection_id(connection_data), owner_user_id=owner_user_id)
+        current_row = self.get_account(account_id, owner_user_id=owner_user_id)
+        if current_row:
+            updates: dict[str, Any] = {}
+            if not current_row["name"] and base_name:
+                updates["name"] = self._unique_account_name(base_name, owner_user_id)
+            if not current_row["destination"] and (connection_data.destination or connection_data.provider_user_id):
+                updates["destination"] = connection_data.destination or connection_data.provider_user_id
+            current_options = json.loads(current_row["options_json"] or "{}")
+            updates["options"] = {**current_options, **options}
+            self.update_account(account_id, owner_user_id=owner_user_id, **updates)
+            return account_id
+        self.update_account(account_id, options=options, owner_user_id=owner_user_id)
+        return account_id
+
+    def _find_account_for_oauth_connection(
+        self,
+        connection_data: OAuthConnection,
+        owner_user_id: int,
+        platform: str,
+    ) -> int | None:
+        connection_id = self._oauth_connection_id(connection_data)
+        for row in self.list_accounts(owner_user_id=owner_user_id):
+            if row["platform"] != platform:
+                continue
+            options = json.loads(row["options_json"] or "{}")
+            if options.get("oauth_connection_id") == connection_id or options.get("oauth_connection_key") == connection_id:
+                return int(row["id"])
+            if connection_data.account_name and row["name"] == connection_data.account_name:
+                return int(row["id"])
+            if connection_data.destination and row["destination"] == connection_data.destination:
+                return int(row["id"])
+        return None
+
+    def _find_meta_instagram_account(
+        self,
+        *,
+        owner_user_id: int,
+        remote_connection_id: str,
+        page_id: str | None,
+        ig_user_id: str | None,
+    ) -> int | None:
+        normalized_page_id = str(page_id) if page_id is not None else None
+        normalized_ig_user_id = str(ig_user_id) if ig_user_id is not None else None
+        for row in self.list_accounts(owner_user_id=owner_user_id):
+            if row["platform"] != "instagram":
+                continue
+            options = json.loads(row["options_json"] or "{}")
+            if options.get("remote_connection_id") == remote_connection_id:
+                return int(row["id"])
+            if options.get("oauth_connection_id") == remote_connection_id or options.get("oauth_connection_key") == remote_connection_id:
+                return int(row["id"])
+            if normalized_page_id and (options.get("page_id") == normalized_page_id or options.get("meta_page_id") == normalized_page_id):
+                return int(row["id"])
+            if normalized_ig_user_id and options.get("ig_user_id") == normalized_ig_user_id:
+                return int(row["id"])
+        return None
+
+    def _find_tiktok_account(
+        self,
+        *,
+        owner_user_id: int,
+        remote_connection_id: str,
+        open_id: str | None,
+    ) -> int | None:
+        normalized_open_id = str(open_id) if open_id is not None else None
+        for row in self.list_accounts(owner_user_id=owner_user_id):
+            if row["platform"] != "tiktok":
+                continue
+            options = json.loads(row["options_json"] or "{}")
+            if options.get("remote_connection_id") == remote_connection_id:
+                return int(row["id"])
+            if options.get("oauth_connection_id") == remote_connection_id or options.get("oauth_connection_key") == remote_connection_id:
+                return int(row["id"])
+            if normalized_open_id and (
+                options.get("open_id") == normalized_open_id
+                or options.get("provider_user_id") == normalized_open_id
+                or options.get("oauth_provider_user_id") == normalized_open_id
+            ):
+                return int(row["id"])
+        return None
+
+    def update_oauth_connection_profile(
+        self,
+        connection_key: str,
+        *,
+        owner_user_id: int | None = None,
+        provider_user_id: str | None = None,
+        account_name: str | None = None,
+        destination: str | None = None,
+    ) -> bool:
+        updates: list[str] = []
+        values: list[object] = []
+        if provider_user_id is not None:
+            updates.append("provider_user_id = ?")
+            values.append(provider_user_id)
+        if account_name is not None:
+            updates.append("account_name = ?")
+            values.append(account_name)
+        if destination is not None:
+            updates.append("destination = ?")
+            values.append(destination)
+        if not updates:
+            return False
+        updates.append("updated_at = ?")
+        values.append(datetime.utcnow().isoformat())
+        values.extend([connection_key, connection_key])
+        with self.connect() as connection:
+            if owner_user_id is None:
+                cursor = connection.execute(
+                    f"UPDATE oauth_connections SET {', '.join(updates)} WHERE (connection_id = ? OR connection_key = ?)",
+                    values,
+                )
+            else:
+                values.append(owner_user_id)
+                cursor = connection.execute(
+                    f"UPDATE oauth_connections SET {', '.join(updates)} "
+                    "WHERE (connection_id = ? OR connection_key = ?) AND owner_user_id = ?",
+                    values,
+                )
+            return cursor.rowcount > 0
+
+    def _account_options_for_oauth_connection(self, connection_data: OAuthConnection) -> dict[str, Any]:
+        connection_id = self._oauth_connection_id(connection_data)
+        options: dict[str, Any] = {
+            "oauth_connection_id": connection_id,
+            "oauth_connection_key": connection_id,
+            "oauth_provider": connection_data.platform.lower(),
+            "oauth_status": connection_data.status,
+            "oauth_revoked": int(connection_data.revoked or 0),
+        }
+        if connection_data.provider_user_id:
+            options["oauth_provider_user_id"] = connection_data.provider_user_id
+        if connection_data.link_token:
+            options["oauth_link_token"] = connection_data.link_token
+        if connection_data.account_external_id:
+            options["oauth_account_external_id"] = connection_data.account_external_id
+        if connection_data.account_name:
+            options["oauth_account_name"] = connection_data.account_name
+        if connection_data.destination:
+            options["oauth_destination"] = connection_data.destination
+        if connection_data.scopes or connection_data.scope:
+            options["oauth_scopes"] = connection_data.scopes or connection_data.scope
+        if connection_data.metadata:
+            options["oauth_metadata"] = connection_data.metadata
+        return options
+
+    def _local_platform_for_provider(self, provider: str) -> str:
+        normalized = provider.lower()
+        if normalized == "meta":
+            return "instagram"
+        return normalized
+
+    def _oauth_connection_id(self, connection_data: OAuthConnection) -> str:
+        return str(connection_data.connection_id or connection_data.connection_key)
+
+    def _unique_account_name(self, base_name: str, owner_user_id: int) -> str:
+        existing_names = {str(row["name"]) for row in self.list_accounts()}
+        if base_name not in existing_names:
+            return base_name
+        suffix = 2
+        while f"{base_name} #{suffix}" in existing_names:
+            suffix += 1
+        return f"{base_name} #{suffix}"
+
+    # ---------------------------------------------------------------------------
+    # Video Core CRUD
+    # ---------------------------------------------------------------------------
+
+    def create_video_post(
+        self,
+        *,
+        external_post_id: str,
+        text: str,
+        title: str | None = None,
+        owner_user_id: int | None = None,
+        status: str = "draft",
+        scheduled_at: str | None = None,
+        published_at: str | None = None,
+        metadata: dict | None = None,
+    ) -> int:
+        """Create a new video post record."""
+        now = datetime.utcnow().isoformat()
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO video_posts(
+                    owner_user_id, external_post_id, title, text, status,
+                    scheduled_at, published_at, metadata_json, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    owner_user_id,
+                    external_post_id,
+                    title,
+                    text,
+                    status,
+                    scheduled_at,
+                    published_at,
+                    json.dumps(metadata or {}, ensure_ascii=False),
+                    now,
+                    now,
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def get_video_post(self, post_id: int) -> sqlite3.Row | None:
+        """Get a video post by its primary key id."""
+        with self.connect() as connection:
+            return connection.execute(
+                "SELECT * FROM video_posts WHERE id = ?",
+                (post_id,),
+            ).fetchone()
+
+    def update_video_post_status(
+        self,
+        post_id: int,
+        status: str,
+        updated_at: str | None = None,
+    ) -> bool:
+        """Update the status of a video post."""
+        with self.connect() as connection:
+            now = updated_at or datetime.utcnow().isoformat()
+            cursor = connection.execute(
+                "UPDATE video_posts SET status = ?, updated_at = ? WHERE id = ?",
+                (status, now, post_id),
+            )
+            return cursor.rowcount > 0
+
+    def list_video_posts_by_status(
+        self,
+        status: str,
+        limit: int = 50,
+    ) -> list[sqlite3.Row]:
+        """List video posts filtered by status."""
+        with self.connect() as connection:
+            return list(
+                connection.execute(
+                    "SELECT * FROM video_posts WHERE status = ? ORDER BY created_at DESC LIMIT ?",
+                    (status, limit),
+                ).fetchall()
+            )
+
+    def create_video_asset(
+        self,
+        *,
+        post_id: int,
+        source: str,
+        media_type: str = "video",
+        order_index: int = 0,
+        original_filename: str | None = None,
+        file_size: int | None = None,
+        mime_type: str | None = None,
+        duration_seconds: float | None = None,
+        width: int | None = None,
+        height: int | None = None,
+        aspect_ratio: str | None = None,
+        cloudinary_public_id: str | None = None,
+        cloudinary_url: str | None = None,
+        processed: int = 0,
+        options: dict | None = None,
+    ) -> int:
+        """Create a new video asset record."""
+        now = datetime.utcnow().isoformat()
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO video_assets(
+                    post_id, source, media_type, order_index,
+                    original_filename, file_size, mime_type,
+                    duration_seconds, width, height, aspect_ratio,
+                    cloudinary_public_id, cloudinary_url, processed,
+                    options_json, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    post_id,
+                    source,
+                    media_type,
+                    order_index,
+                    original_filename,
+                    file_size,
+                    mime_type,
+                    duration_seconds,
+                    width,
+                    height,
+                    aspect_ratio,
+                    cloudinary_public_id,
+                    cloudinary_url,
+                    processed,
+                    json.dumps(options or {}, ensure_ascii=False),
+                    now,
+                    now,
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def list_video_assets(self, post_id: int) -> list[sqlite3.Row]:
+        """List all video assets for a given post, ordered by order_index."""
+        with self.connect() as connection:
+            return list(
+                connection.execute(
+                    "SELECT * FROM video_assets WHERE post_id = ? ORDER BY order_index, id",
+                    (post_id,),
+                ).fetchall()
+            )
+
+    def create_video_target(
+        self,
+        *,
+        post_id: int,
+        account_id: int,
+        platform: str,
+        destination: str | None = None,
+        options: dict | None = None,
+    ) -> int:
+        """Create a new video target record."""
+        now = datetime.utcnow().isoformat()
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO video_targets(
+                    post_id, account_id, platform, destination,
+                    options_json, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    post_id,
+                    account_id,
+                    platform.lower(),
+                    destination,
+                    json.dumps(options or {}, ensure_ascii=False),
+                    now,
+                    now,
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def list_video_targets(self, post_id: int) -> list[sqlite3.Row]:
+        """List all video targets for a given post."""
+        with self.connect() as connection:
+            return list(
+                connection.execute(
+                    "SELECT * FROM video_targets WHERE post_id = ? ORDER BY id",
+                    (post_id,),
+                ).fetchall()
+            )
+
+    def update_video_target_status(
+        self,
+        target_id: int,
+        status: str,
+        error_message: str | None = None,
+    ) -> bool:
+        """Update the status of a video target. Optionally store error detail in options_json."""
+        now = datetime.utcnow().isoformat()
+        with self.connect() as connection:
+            if error_message is not None:
+                row = connection.execute(
+                    "SELECT options_json FROM video_targets WHERE id = ?",
+                    (target_id,),
+                ).fetchone()
+                if row:
+                    opts = json.loads(row["options_json"] or "{}")
+                    opts["last_error"] = error_message
+                    connection.execute(
+                        "UPDATE video_targets SET status = ?, options_json = ?, updated_at = ? WHERE id = ?",
+                        (status, json.dumps(opts, ensure_ascii=False), now, target_id),
+                    )
+                    return True
+            cursor = connection.execute(
+                "UPDATE video_targets SET status = ?, updated_at = ? WHERE id = ?",
+                (status, now, target_id),
+            )
+            return cursor.rowcount > 0
+
+    def create_video_publication_attempt(
+        self,
+        *,
+        post_id: int,
+        target_id: int,
+        platform: str,
+        attempt_number: int = 1,
+        status: str = "started",
+        external_id: str | None = None,
+        error_code: str | None = None,
+        error_detail: str | None = None,
+        retry_at: str | None = None,
+        started_at: str | None = None,
+        finished_at: str | None = None,
+    ) -> int:
+        """Create a new video publication attempt record."""
+        now = datetime.utcnow().isoformat()
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO video_publication_attempts(
+                    post_id, target_id, platform, attempt_number, status,
+                    external_id, error_code, error_detail, retry_at,
+                    started_at, finished_at, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    post_id,
+                    target_id,
+                    platform.lower(),
+                    attempt_number,
+                    status,
+                    external_id,
+                    error_code,
+                    error_detail,
+                    retry_at,
+                    started_at or now,
+                    finished_at,
+                    now,
+                    now,
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def list_video_publication_attempts(self, target_id: int) -> list[sqlite3.Row]:
+        """List all publication attempts for a given target, ordered by attempt_number."""
+        with self.connect() as connection:
+            return list(
+                connection.execute(
+                    "SELECT * FROM video_publication_attempts WHERE target_id = ? ORDER BY attempt_number, id",
+                    (target_id,),
+                ).fetchall()
+            )
+
     def create_job(
         self,
         post_id: str,
@@ -1308,7 +2279,7 @@ class Database:
                                 destination=target_row["destination"],
                                 account_id=int(target_row["id"]),
                                 account_name=target_row["name"],
-                                options=json.loads(target_row["options_json"] or "{}"),
+                                options=self.resolve_account_options(int(target_row["id"]), owner_user_id=row["owner_user_id"]),
                             )
                             for target_row in target_rows
                         ],

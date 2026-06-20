@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -127,19 +128,24 @@ class TelegramAdminBot:
         chat_id = int(message["chat"]["id"])
         user_id = message.get("from", {}).get("id")
         text = (message.get("text") or "").strip()
-        print(f"[admin-bot] update from user_id={user_id} chat_id={chat_id} text={text!r}")
+        print(f"[admin-bot] update from user_id={user_id} chat_id={chat_id} text={self._redact_text(text)!r}")
 
         if text.startswith("/whoami"):
             reply = f"Ваш Telegram user id: {user_id}"
-            print(f"[admin-bot] reply for chat_id={chat_id}: {reply}")
+            print(f"[admin-bot] reply for chat_id={chat_id}: {self._redact_text(reply)}")
             self._safe_send_message(chat_id, reply)
             return
         if not self._is_allowed(user_id):
             reply = "Доступ запрещён. Добавьте ваш Telegram user id в TELEGRAM_ADMIN_USER_IDS."
-            print(f"[admin-bot] reply for chat_id={chat_id}: {reply}")
+            print(f"[admin-bot] reply for chat_id={chat_id}: {self._redact_text(reply)}")
             self._safe_send_message(chat_id, reply)
             return
         self._ensure_current_user(chat_id, message.get("from") or {})
+        oauth_reply = self._handle_oauth_done_start_payload(chat_id, text)
+        if oauth_reply is not None:
+            print(f"[admin-bot] reply for chat_id={chat_id}: {self._redact_text(oauth_reply)}")
+            self._safe_send_message(chat_id, oauth_reply)
+            return
         start_ref_message = self._maybe_apply_referral(chat_id, text)
         if not self._is_registered_current_user(chat_id):
             if self._handle_welcome_contact(chat_id, message):
@@ -158,7 +164,7 @@ class TelegramAdminBot:
                 return
             self._send_welcome_menu(chat_id)
             reply = "Сначала завершите регистрацию, чтобы открыть полный интерфейс."
-            print(f"[admin-bot] reply for chat_id={chat_id}: {reply}")
+            print(f"[admin-bot] reply for chat_id={chat_id}: {self._redact_text(reply)}")
             self._safe_send_message(chat_id, reply)
             return
         if self._handle_main_reply_keyboard_text(chat_id, text):
@@ -176,7 +182,7 @@ class TelegramAdminBot:
                 reply = f"Ошибка: {exc}"
             if start_ref_message:
                 reply = f"{start_ref_message}\n\n{reply}" if reply else start_ref_message
-            print(f"[admin-bot] reply for chat_id={chat_id}: {reply}")
+            print(f"[admin-bot] reply for chat_id={chat_id}: {self._redact_text(reply)}")
             if reply:
                 self._safe_send_message(chat_id, reply)
             return
@@ -187,7 +193,7 @@ class TelegramAdminBot:
             reply = f"Ошибка: {exc}"
         if start_ref_message:
             reply = f"{start_ref_message}\n\n{reply}" if reply else start_ref_message
-        print(f"[admin-bot] reply for chat_id={chat_id}: {reply}")
+        print(f"[admin-bot] reply for chat_id={chat_id}: {self._redact_text(reply)}")
         if reply:
             self._safe_send_message(chat_id, reply)
 
@@ -212,17 +218,24 @@ class TelegramAdminBot:
                 reply = self._dispatch_callback(chat_id, data)
             except Exception as exc:
                 reply = f"Ошибка: {exc}"
-        print(f"[admin-bot] reply for chat_id={chat_id}: {reply}")
+        print(f"[admin-bot] reply for chat_id={chat_id}: {self._redact_text(reply)}")
         if reply:
             self._safe_send_message(chat_id, reply)
 
     def _dispatch_command(self, text: str, received_at: datetime, chat_id: int) -> str | None:
         if text.startswith("/start") or text.startswith("/menu") or text.startswith("/help"):
+            if text.startswith("/start "):
+                oauth_reply = self._handle_oauth_done_start_payload(chat_id, text)
+                if oauth_reply is not None:
+                    return oauth_reply
             self._reset_session(chat_id)
             self._send_main_menu(chat_id)
             return None
         if text.startswith("/accounts"):
             self._send_accounts_menu(chat_id)
+            return None
+        if text.startswith("/add_account"):
+            self._add_account_flow(chat_id)
             return None
         if text.startswith("/vk_token_status"):
             self._require_admin(chat_id)
@@ -246,6 +259,12 @@ class TelegramAdminBot:
             return self._add_instagram_command(text, chat_id)
         if text.startswith("/add_tiktok "):
             return self._add_tiktok_command(text, chat_id)
+        if text.startswith("/oauth_connections"):
+            return self._oauth_connections_command(chat_id)
+        if text.startswith("/sync_oauth_connections"):
+            return self._sync_oauth_connections_command(chat_id)
+        if text.startswith("/link_oauth "):
+            return self._link_oauth_connection_command(text, chat_id)
         if text.startswith("/test_text "):
             return self._test_text_command(text, chat_id)
         if text.startswith("/test_photo "):
@@ -312,6 +331,17 @@ class TelegramAdminBot:
             self._reset_session(chat_id)
             self._send_accounts_menu(chat_id)
             return None
+        if parts[:2] == ["oauth", "add"]:
+            self._add_account_flow(chat_id)
+            return None
+        if parts[:2] == ["oauth", "start"] and len(parts) >= 3:
+            return self._start_oauth_link(chat_id, parts[2])
+        if parts[:2] == ["menu", "oauth_connections"]:
+            self._safe_send_message(chat_id, self._oauth_connections_command(chat_id), reply_markup=self._admin_back_markup(), ui=True)
+            return None
+        if parts[:2] == ["menu", "sync_oauth_connections"]:
+            self._safe_send_message(chat_id, self._sync_oauth_connections_command(chat_id), reply_markup=self._admin_back_markup(), ui=True)
+            return None
         if parts[:2] == ["menu", "post"]:
             self._start_post_flow(chat_id)
             return None
@@ -353,6 +383,9 @@ class TelegramAdminBot:
                 self._send_platform_choice_menu(chat_id, prefix="acct|add")
                 return None
             platform = parts[2]
+            if platform in {"tiktok", "instagram"}:
+                provider = "meta" if platform == "instagram" else "tiktok"
+                return self._start_oauth_link(chat_id, provider)
             self.sessions[chat_id] = {"flow": "account_add", "platform": platform, "step": "name"}
             return f"Введите название аккаунта для {self._platform_label(platform)}."
         if action == "delete":
@@ -575,6 +608,9 @@ class TelegramAdminBot:
         self._reset_session(chat_id)
         self._send_accounts_menu(chat_id)
         return f"Добавлен аккаунт #{account_id} для {self._platform_label(session['platform'])}."
+
+    def _oauth_linking_not_configured_message(self) -> str:
+        return "OAuth-подключение не настроено. Проверьте SPGUTILS_API_BASE_URL и SPGUTILS_API_TOKEN."
 
     def _handle_edit_account_message(self, chat_id: int, message: dict, received_at: datetime) -> str:
         session = self.sessions[chat_id]
@@ -819,7 +855,7 @@ class TelegramAdminBot:
             destination=row["destination"],
             account_id=int(row["id"]),
             account_name=row["name"],
-            options=json.loads(row["options_json"] or "{}"),
+            options=self.db.resolve_account_options(int(row["id"]), owner_user_id=owner_user_id),
         )
         content_type = self._resolve_content_type(target.platform, draft.content_kind, draft.media_items)
         return PostJob(
@@ -882,7 +918,7 @@ class TelegramAdminBot:
             reply_markup=self._keyboard(
                 [
                     [("Telegram", f"{prefix}|telegram"), ("VK", f"{prefix}|vk")],
-                    [("Instagram", f"{prefix}|instagram"), ("TikTok", f"{prefix}|tiktok")],
+                    [("Instagram OAuth", f"{prefix}|instagram"), ("TikTok OAuth", f"{prefix}|tiktok")],
                     [("Назад", "menu|accounts")],
                 ]
             ),
@@ -993,7 +1029,8 @@ class TelegramAdminBot:
         )
 
     def _account_details_text(self, row) -> str:
-        options = json.loads(row["options_json"] or "{}")
+        owner_user_id = int(row["owner_user_id"]) if row["owner_user_id"] is not None else None
+        options = self.db.resolve_account_options(int(row["id"]), owner_user_id=owner_user_id)
         token_preview = self._masked_token_for_account(row["platform"], options)
         obtained_at, expires_at = self._token_dates_for_account(row["platform"])
         lines = [
@@ -1004,6 +1041,8 @@ class TelegramAdminBot:
         ]
         if token_preview:
             lines.append(f"Token: {token_preview}")
+        if options.get("oauth_connection_key"):
+            lines.append(f"OAuth connection: {options['oauth_connection_key']}")
         if obtained_at:
             lines.append(f"Получен: {obtained_at}")
         if expires_at:
@@ -1231,6 +1270,14 @@ class TelegramAdminBot:
             if user and user["role"] != "admin":
                 self.db.set_user_role(user_id, "admin")
 
+    def _redact_text(self, text: str | None) -> str:
+        if text is None:
+            return "None"
+        redacted = re.sub(r"(oauth_done_)[^\s]+", r"\1[REDACTED]", text)
+        redacted = re.sub(r"(?i)\b(access_token|refresh_token|link_token)=([^\s]+)", r"\1=[REDACTED]", redacted)
+        redacted = re.sub(r"(?i)\b(access_token|refresh_token|link_token)\s+([^\s]+)", r"\1 [REDACTED]", redacted)
+        return redacted
+
     def _maybe_apply_referral(self, chat_id: int, text: str) -> str | None:
         if not text.startswith("/start"):
             return None
@@ -1291,6 +1338,44 @@ class TelegramAdminBot:
             f"Вам начислено: {REFERRAL_REWARD_REFERRED} кредитов.\n"
             f"Партнёру начислено: {referrer_reward} кредитов."
         )
+
+    def _handle_oauth_done_start_payload(self, chat_id: int, text: str) -> str | None:
+        if not text.startswith("/start "):
+            return None
+        payload = text.split(maxsplit=1)[1].strip()
+        prefix = "oauth_done_"
+        if not payload.startswith(prefix):
+            return None
+        link_token = payload[len(prefix):].strip()
+        if not link_token:
+            return "Ошибка: link_token не передан."
+        result = self.service.get_oauth_link_result(link_token)
+        if not isinstance(result, dict):
+            return "Ошибка: Worker вернул неожиданный ответ."
+        if not result.get("ok", False):
+            error = result.get("error") or result.get("message") or "OAuth link failed"
+            return f"Ошибка OAuth: {error}"
+        link = result.get("link") or {}
+        status = str(link.get("status") or "").lower()
+        if status == "pending":
+            return "Авторизация ещё не завершена."
+        if status == "error":
+            error = link.get("error") or result.get("error") or "Worker reported an error"
+            return f"Ошибка OAuth: {error}"
+        if status != "connected":
+            return "Авторизация ещё не завершена."
+        connection_payload = result.get("connection") or {}
+        if isinstance(connection_payload, dict) and connection_payload:
+            connection = self.service.spgutils._parse_connection(connection_payload)
+            connection.status = "connected"
+            connection.link_token = str(link_token)
+            connection.connection_id = connection.connection_id or connection.connection_key
+            telegram_user_id = link.get("telegram_user_id")
+            if telegram_user_id is not None and str(telegram_user_id).isdigit():
+                connection.telegram_user_id = int(telegram_user_id)
+            self.db.sync_oauth_connections([connection], owner_user_id=self._current_user_id(chat_id))
+        self._send_accounts_menu(chat_id)
+        return "Аккаунт успешно подключён."
 
     def _accounts_for_platform(self, platform: str, chat_id: int) -> list:
         return [
@@ -2155,6 +2240,80 @@ class TelegramAdminBot:
         account_id = self._create_account(name, "tiktok", username, self._current_user_id(chat_id))
         return f"Добавлен TikTok-аккаунт #{account_id}: {name} -> {username}"
 
+    def _add_account_flow(self, chat_id: int) -> None:
+        self._safe_send_message(
+            chat_id,
+            "Выберите соцсеть для OAuth-подключения.",
+            reply_markup=self._keyboard(
+                [
+                    [("Connect TikTok", "oauth|start|tiktok")],
+                    [("Connect Meta / Instagram", "oauth|start|meta")],
+                    [("Назад", "menu|accounts")],
+                ]
+            ),
+            ui=True,
+        )
+
+    def _start_oauth_link(self, chat_id: int, provider: str) -> str | None:
+        provider = provider.strip().lower()
+        if provider not in {"tiktok", "meta"}:
+            raise ValueError(f"Unsupported OAuth provider: {provider}")
+        if not self.settings.spgutils_api_base_url or not self.settings.spgutils_api_token:
+            return self._oauth_linking_not_configured_message()
+        user_id = self._current_user_id(chat_id)
+        result = self.service.start_oauth_link(user_id, chat_id, provider)
+        auth_url = result.get("auth_url")
+        link_token = result.get("link_token")
+        if not auth_url or not link_token:
+            raise ValueError("Worker did not return auth_url/link_token")
+        if provider == "tiktok":
+            button_label = "Подключить TikTok"
+            message = "Нажмите кнопку ниже, чтобы подключить TikTok через OAuth."
+        else:
+            button_label = "Подключить Instagram"
+            message = "Нажмите кнопку ниже, чтобы подключить Instagram/Meta через OAuth."
+        self._safe_send_message(
+            chat_id,
+            message,
+            reply_markup=self._keyboard(
+                [
+                    [(button_label, "url", str(auth_url))],
+                    [("Назад", "menu|accounts")],
+                ]
+            ),
+            ui=True,
+        )
+
+    def _oauth_connections_command(self, chat_id: int) -> str:
+        rows = self.service.list_oauth_connections_for_user(self._current_user_id(chat_id))
+        if not rows:
+            return (
+                "OAuth-подключения не найдены.\n"
+                "Если аккаунт уже подключён на spgutils.ru, выполните /sync_oauth_connections."
+            )
+        lines = ["OAuth-подключения:"]
+        for row in rows:
+            lines.append(
+                f"#{row['id']} | {row['platform']} | {row['account_name'] or '-'} | "
+                f"{row['destination'] or '-'} | {row['status']} | id={row['connection_id'] or row['connection_key']}"
+            )
+        return "\n".join(lines)
+
+    def _sync_oauth_connections_command(self, chat_id: int) -> str:
+        synced = self.service.sync_oauth_connections_for_user(self._current_user_id(chat_id))
+        return f"Синхронизировано OAuth-подключений: {synced}"
+
+    def _link_oauth_connection_command(self, text: str, chat_id: int) -> str:
+        parts = text.split(maxsplit=2)
+        if len(parts) != 3:
+            raise ValueError("Формат: /link_oauth <account_id> <connection_key>")
+        account_id = int(parts[1])
+        connection_key = parts[2].strip()
+        owner_user_id = self._current_user_id(chat_id)
+        if not self.db.attach_oauth_connection_to_account(account_id, connection_key, owner_user_id=owner_user_id):
+            raise ValueError(f"Не удалось связать аккаунт #{account_id} с {connection_key}")
+        return f"Аккаунт #{account_id} связан с OAuth connection {connection_key}"
+
     def _test_text_command(self, text: str, chat_id: int) -> str:
         parts = text.split(maxsplit=2)
         if len(parts) < 3:
@@ -2212,7 +2371,7 @@ class TelegramAdminBot:
             destination=row["destination"],
             account_id=int(row["id"]),
             account_name=row["name"],
-            options=json.loads(row["options_json"] or "{}"),
+            options=self.db.resolve_account_options(int(row["id"]), owner_user_id=owner_user_id),
         )
         content_kind = "text" if not media_items else media_items[0].media_type
         return PostJob(
@@ -2493,7 +2652,7 @@ class TelegramAdminBot:
                     reply = self._dispatch_callback(chat_id, data)
                 except Exception as exc:
                     reply = f"Ошибка: {exc}"
-        print(f"[admin-bot] reply for chat_id={chat_id}: {reply}")
+        print(f"[admin-bot] reply for chat_id={chat_id}: {self._redact_text(reply)}")
         if reply:
             self._safe_send_message(chat_id, reply)
 
@@ -2913,8 +3072,10 @@ class TelegramAdminBot:
             "🔗 Аккаунты",
             reply_markup=self._keyboard(
                 [
-                    [("📚 Список аккаунтов", "acct|list"), ("➕ Добавить", "acct|add")],
+                    [("📚 Список аккаунтов", "acct|list"), ("🔗 Подключить", "oauth|add")],
+                    [("➕ Добавить", "acct|add")],
                     [("✏️ Изменить", "acct|edit"), ("🗑️ Удалить", "acct|delete")],
+                    [("🔗 OAuth", "menu|oauth_connections"), ("🔄 Sync OAuth", "menu|sync_oauth_connections")],
                     [("⬅️ Назад", "menu|main")],
                 ]
             ),
@@ -2928,7 +3089,7 @@ class TelegramAdminBot:
             reply_markup=self._keyboard(
                 [
                     [("Telegram", f"{prefix}|telegram"), ("VK", f"{prefix}|vk")],
-                    [("Instagram", f"{prefix}|instagram"), ("TikTok", f"{prefix}|tiktok")],
+                    [("Instagram OAuth", f"{prefix}|instagram"), ("TikTok OAuth", f"{prefix}|tiktok")],
                     [("Назад", "menu|accounts")],
                 ]
             ),
@@ -3831,8 +3992,8 @@ class TelegramAdminBot:
                     "1. Как подключить аккаунты",
                     "• Telegram: откройте «Аккаунты» → «Добавить», выберите Telegram и укажите @канал или chat_id. Бот должен быть админом канала.",
                     "• VK: выберите VK и укажите owner_id сообщества или страницы. Для публикации нужен рабочий VK token.",
-                    "• Instagram: выберите Instagram и укажите username. Для публикации должны быть настроены ig_user_id и access token.",
-                    "• TikTok: выберите TikTok и укажите username. Нужен access token и доступность upload-хостов.",
+                    "• Instagram: выберите Instagram OAuth и пройдите авторизацию через Worker.",
+                    "• TikTok: выберите TikTok OAuth и пройдите авторизацию через Worker.",
                     "",
                     "2. Как отправить пост",
                     "• Нажмите «Создать пост»",

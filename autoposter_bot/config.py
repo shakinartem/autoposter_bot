@@ -57,6 +57,9 @@ class Settings:
     cloudinary_api_key: str | None
     cloudinary_api_secret: str | None
     cloudinary_folder: str | None
+    spgutils_api_base_url: str | None
+    spgutils_api_token: str | None
+    spgutils_timeout_seconds: int
     yookassa_shop_id: str | None
     yookassa_secret_key: str | None
     yookassa_return_url: str | None
@@ -128,6 +131,9 @@ def load_settings(env_file: str | None = None) -> Settings:
         cloudinary_api_key=get_value("CLOUDINARY_API_KEY"),
         cloudinary_api_secret=get_value("CLOUDINARY_API_SECRET"),
         cloudinary_folder=get_value("CLOUDINARY_FOLDER", "autoposter"),
+        spgutils_api_base_url=get_value("SPGUTILS_API_BASE_URL", "https://api.spgutils.ru"),
+        spgutils_api_token=get_value("SPGUTILS_API_TOKEN"),
+        spgutils_timeout_seconds=_parse_int(get_value("SPGUTILS_TIMEOUT_SECONDS", "20")) or 20,
         yookassa_shop_id=get_value("YOOKASSA_SHOP_ID"),
         yookassa_secret_key=get_value("YOOKASSA_SECRET_KEY"),
         yookassa_return_url=get_value("YOOKASSA_RETURN_URL"),
