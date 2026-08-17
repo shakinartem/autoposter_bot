@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
+from typing import Any
 
 from autoposter_bot.models import MediaItem, PostJob, Target
 from autoposter_bot.publishers.base import PublishResult, Publisher
@@ -40,22 +41,30 @@ class TelegramPublisher(Publisher):
 
         media_items = self._normalize_media_types(job.media_items)
         base_url = f"https://api.telegram.org/bot{self.bot_token}"
+        options = self._message_options(target.options)
         try:
             if not media_items:
                 response = self._post_with_retries(
                     f"{base_url}/sendMessage",
-                    data={"chat_id": chat_id, "text": job.text},
+                    data={"chat_id": chat_id, "text": job.text, **options},
                     timeout=(20, 180),
                 )
                 return self._build_result(chat_id, response)
 
             if len(media_items) == 1:
-                return self._publish_single_media(base_url, chat_id, media_items[0], job.text)
-            return self._publish_media_group(base_url, chat_id, media_items, job.text)
+                return self._publish_single_media(base_url, chat_id, media_items[0], job.text, options)
+            return self._publish_media_group(base_url, chat_id, media_items, job.text, options)
         except requests.exceptions.RequestException as exc:
             return PublishResult(self.platform, chat_id, False, f"Telegram network error: {exc}")
 
-    def _publish_single_media(self, base_url: str, chat_id: str, media_item: MediaItem, caption: str) -> PublishResult:
+    def _publish_single_media(
+        self,
+        base_url: str,
+        chat_id: str,
+        media_item: MediaItem,
+        caption: str,
+        options: dict[str, Any],
+    ) -> PublishResult:
         media_type = media_item.media_type
         if media_type == "image":
             method = "sendPhoto"
@@ -69,7 +78,7 @@ class TelegramPublisher(Publisher):
         with Path(media_item.source).open("rb") as media_stream:
             response = self._post_with_retries(
                 f"{base_url}/{method}",
-                data={"chat_id": chat_id, "caption": caption},
+                data={"chat_id": chat_id, "caption": caption, **options},
                 files={field_name: media_stream},
                 timeout=(20, 300),
             )
@@ -81,6 +90,7 @@ class TelegramPublisher(Publisher):
         chat_id: str,
         media_items: list[MediaItem],
         caption: str,
+        options: dict[str, Any],
     ) -> PublishResult:
         files = {}
         media_payload = []
@@ -91,17 +101,28 @@ class TelegramPublisher(Publisher):
                 media_stream = Path(media_item.source).open("rb")
                 opened_streams.append(media_stream)
                 files[attachment_name] = media_stream
-                media_object = {
+                media_object: dict[str, Any] = {
                     "type": "photo" if media_item.media_type == "image" else "video",
                     "media": f"attach://{attachment_name}",
                 }
                 if index == 0 and caption:
                     media_object["caption"] = caption
+                    if options.get("parse_mode"):
+                        media_object["parse_mode"] = options["parse_mode"]
                 media_payload.append(media_object)
 
+            group_options = {
+                key: value
+                for key, value in options.items()
+                if key in {"disable_notification", "protect_content"}
+            }
             response = self._post_with_retries(
                 f"{base_url}/sendMediaGroup",
-                data={"chat_id": chat_id, "media": json.dumps(media_payload, ensure_ascii=False)},
+                data={
+                    "chat_id": chat_id,
+                    "media": json.dumps(media_payload, ensure_ascii=False),
+                    **group_options,
+                },
                 files=files,
                 timeout=(20, 360),
             )
@@ -109,6 +130,18 @@ class TelegramPublisher(Publisher):
         finally:
             for stream in opened_streams:
                 stream.close()
+
+    @staticmethod
+    def _message_options(raw: dict[str, Any]) -> dict[str, Any]:
+        options: dict[str, Any] = {}
+        parse_mode = str(raw.get("parse_mode") or "").strip()
+        if parse_mode and parse_mode.lower() != "plain":
+            options["parse_mode"] = parse_mode
+        if "disable_notification" in raw:
+            options["disable_notification"] = bool(raw["disable_notification"])
+        if "protect_content" in raw:
+            options["protect_content"] = bool(raw["protect_content"])
+        return options
 
     def _post_with_retries(self, url: str, **kwargs):
         last_error = None
