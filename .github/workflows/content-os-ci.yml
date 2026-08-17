@@ -7,6 +7,7 @@ on:
   pull_request:
     branches:
       - product-platform
+      - content-os-foundation
 
 jobs:
   python:
@@ -39,6 +40,12 @@ jobs:
           pip install -e ".[dev]"
       - name: Compile Python package
         run: python -m compileall autoposter_bot
+      - name: Import integrated API
+        env:
+          CONTENT_FACTORY_INGEST_TOKEN: ci-content-factory-token
+          AUTOPOSTER_DB_PATH: /tmp/autoposter-ci.sqlite3
+          CONTENT_FACTORY_MEDIA_CACHE_DIR: /tmp/content-factory-media
+        run: python -c "from autoposter_bot.apps.api.integrated_main import app; assert '/api/v1/integrations/content-factory/packages' in app.openapi()['paths']; print(app.version)"
       - name: Run tests
         run: pytest -q
 
