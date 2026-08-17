@@ -5,9 +5,11 @@ import os
 import secrets
 from dataclasses import dataclass
 from hashlib import sha256
-from typing import Annotated
+from typing import Annotated, Callable
 
 from fastapi import Header, HTTPException, status
+
+from autoposter_bot.infrastructure.auth_store import SessionIdentity
 
 
 @dataclass(frozen=True, slots=True)
@@ -15,16 +17,20 @@ class AuthContext:
     workspace_id: int
     credential_fingerprint: str
     mode: str = "api_key"
+    user_id: int | None = None
+    role: str = "service"
+    session_id: str | None = None
+
+
+_session_resolver: Callable[[str], SessionIdentity | None] | None = None
+
+
+def configure_session_resolver(resolver: Callable[[str], SessionIdentity | None] | None) -> None:
+    global _session_resolver
+    _session_resolver = resolver
 
 
 def _parse_api_keys() -> dict[str, int]:
-    """Read API key -> workspace mappings from environment.
-
-    Example:
-      AUTOPOSTER_API_KEYS_JSON='{"dev-secret": 1, "team-secret": 2}'
-
-    Raw keys are never logged or returned by the API.
-    """
     raw = os.getenv("AUTOPOSTER_API_KEYS_JSON", "").strip()
     if not raw:
         return {}
@@ -34,7 +40,6 @@ def _parse_api_keys() -> dict[str, int]:
         raise RuntimeError("AUTOPOSTER_API_KEYS_JSON must contain valid JSON") from exc
     if not isinstance(payload, dict):
         raise RuntimeError("AUTOPOSTER_API_KEYS_JSON must be a JSON object")
-
     result: dict[str, int] = {}
     for key, workspace_id in payload.items():
         if not isinstance(key, str) or len(key) < 16:
@@ -51,10 +56,7 @@ def _parse_api_keys() -> dict[str, int]:
 
 def _require_auth() -> bool:
     return os.getenv("AUTOPOSTER_REQUIRE_API_AUTH", "1").strip().lower() not in {
-        "0",
-        "false",
-        "no",
-        "off",
+        "0", "false", "no", "off",
     }
 
 
@@ -68,45 +70,51 @@ def _dev_workspace_id() -> int:
     return value
 
 
-def get_auth_context(
-    authorization: Annotated[str | None, Header()] = None,
-) -> AuthContext:
+def get_auth_context(authorization: Annotated[str | None, Header()] = None) -> AuthContext:
     keys = _parse_api_keys()
+    scheme, _, supplied = (authorization or "").partition(" ")
 
-    if not keys:
-        if _require_auth():
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="API authentication is required but AUTOPOSTER_API_KEYS_JSON is not configured",
-            )
+    if scheme.lower() == "bearer" and supplied:
+        for configured_key, workspace_id in keys.items():
+            if secrets.compare_digest(supplied, configured_key):
+                return AuthContext(
+                    workspace_id=workspace_id,
+                    credential_fingerprint=sha256(supplied.encode()).hexdigest()[:12],
+                    mode="api_key",
+                    role="service",
+                )
+        if _session_resolver is not None:
+            identity = _session_resolver(supplied)
+            if identity is not None:
+                return AuthContext(
+                    workspace_id=identity.workspace_id,
+                    credential_fingerprint=sha256(supplied.encode()).hexdigest()[:12],
+                    mode="session",
+                    user_id=identity.user_id,
+                    role=identity.role,
+                    session_id=identity.session_id,
+                )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired bearer credential",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if not keys and not _require_auth():
         return AuthContext(
             workspace_id=_dev_workspace_id(),
             credential_fingerprint="development",
             mode="development",
+            role="service",
         )
 
-    scheme, _, supplied = (authorization or "").partition(" ")
-    if scheme.lower() != "bearer" or not supplied:
+    if not keys and _session_resolver is None:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Bearer API key required",
-            headers={"WWW-Authenticate": "Bearer"},
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication is required but no authentication backend is configured",
         )
-
-    matched_workspace: int | None = None
-    for configured_key, workspace_id in keys.items():
-        if secrets.compare_digest(supplied, configured_key):
-            matched_workspace = workspace_id
-            break
-
-    if matched_workspace is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid API key",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    return AuthContext(
-        workspace_id=matched_workspace,
-        credential_fingerprint=sha256(supplied.encode("utf-8")).hexdigest()[:12],
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Bearer credential required",
+        headers={"WWW-Authenticate": "Bearer"},
     )
