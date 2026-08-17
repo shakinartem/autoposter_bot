@@ -64,8 +64,24 @@ export async function POST(request: NextRequest) {
   }
 }
 
-export async function DELETE() {
-  const output = NextResponse.json({ authenticated: false });
+export async function DELETE(request: NextRequest) {
+  const token = request.cookies.get(SESSION_COOKIE)?.value;
+  let revoked = false;
+  if (token) {
+    try {
+      const response = await fetch(`${BACKEND_URL}/api/v1/auth/session`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      });
+      revoked = response.ok || response.status === 401;
+    } catch {
+      // Logout must still clear the browser credential if the backend is down.
+      // The server-side session will expire naturally or can be revoked later.
+    }
+  }
+
+  const output = NextResponse.json({ authenticated: false, revoked });
   output.cookies.delete(SESSION_COOKIE);
   return output;
 }
