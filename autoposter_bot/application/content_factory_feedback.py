@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
-import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -68,7 +68,7 @@ class ContentFactoryFeedback:
         outbox_id = str(uuid4())
         with self.store.connect() as connection:
             existing = connection.execute(
-                "SELECT id FROM analytics_snapshots WHERE event_id = ?",
+                "SELECT id FROM content_factory_analytics_snapshots WHERE event_id = ?",
                 (event,),
             ).fetchone()
             if existing:
@@ -85,17 +85,19 @@ class ContentFactoryFeedback:
 
             cursor = connection.execute(
                 """
-                INSERT INTO analytics_snapshots (
-                    publication_id, metrics_json, captured_at, event_id, platform, metadata_json
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO content_factory_analytics_snapshots (
+                    publication_id, event_id, platform, metrics_json,
+                    metadata_json, captured_at, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     publication_id,
-                    json.dumps(clean_metrics, ensure_ascii=False),
-                    captured.isoformat(),
                     event,
                     context["platform"],
+                    json.dumps(clean_metrics, ensure_ascii=False),
                     json.dumps(metadata or {}, ensure_ascii=False),
+                    captured.isoformat(),
+                    now,
                 ),
             )
             snapshot_id = int(cursor.lastrowid)
@@ -176,7 +178,7 @@ class ContentFactoryFeedback:
                 )
             return True
         except Exception as exc:
-            delay = min(3600, max(5, 2 ** min(int(row.get("attempts") or 0) + 1, 10)))
+            delay = min(3600, max(5, 2 ** min(attempt, 10)))
             available_at = now + timedelta(seconds=delay)
             with self.store.connect() as connection:
                 connection.execute(
@@ -229,9 +231,7 @@ class ContentFactoryFeedback:
         return clean
 
     @staticmethod
-    def _migration_path():
-        from pathlib import Path
-
+    def _migration_path() -> Path:
         path = Path(__file__).resolve().parents[2] / "migrations" / "004_content_factory_performance_feedback.sql"
         if not path.exists():
             raise RuntimeError(f"Content Factory feedback migration not found: {path}")
