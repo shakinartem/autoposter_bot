@@ -1,12 +1,20 @@
 -- Durable Autoposter -> Content Factory performance feedback.
+-- Kept separate from generic analytics_snapshots so startup is fully idempotent.
 
-ALTER TABLE analytics_snapshots ADD COLUMN event_id TEXT;
-ALTER TABLE analytics_snapshots ADD COLUMN platform TEXT;
-ALTER TABLE analytics_snapshots ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}';
+CREATE TABLE IF NOT EXISTS content_factory_analytics_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    publication_id TEXT NOT NULL,
+    event_id TEXT NOT NULL UNIQUE,
+    platform TEXT,
+    metrics_json TEXT NOT NULL DEFAULT '{}',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    captured_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(publication_id) REFERENCES publications_v2(id) ON DELETE CASCADE
+);
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_analytics_snapshots_event_id
-    ON analytics_snapshots(event_id)
-    WHERE event_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_content_factory_analytics_publication
+    ON content_factory_analytics_snapshots(publication_id, captured_at);
 
 CREATE TABLE IF NOT EXISTS content_factory_feedback_outbox (
     id TEXT PRIMARY KEY,
@@ -22,7 +30,7 @@ CREATE TABLE IF NOT EXISTS content_factory_feedback_outbox (
     last_error TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    FOREIGN KEY(analytics_snapshot_id) REFERENCES analytics_snapshots(id) ON DELETE CASCADE
+    FOREIGN KEY(analytics_snapshot_id) REFERENCES content_factory_analytics_snapshots(id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_content_factory_feedback_pending
