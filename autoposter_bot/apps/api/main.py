@@ -28,14 +28,12 @@ from autoposter_bot.apps.api.schemas import (
 from autoposter_bot.apps.api.security import AuthContext, get_auth_context
 from autoposter_bot.config import load_settings
 from autoposter_bot.domain.content import MediaAsset, Publication, PublicationStatus
-from autoposter_bot.infrastructure.content_store import SQLiteContentStore
-from autoposter_bot.infrastructure.workspace_schema import init_workspace_schema
-from autoposter_bot.infrastructure.workspace_store import WorkspaceContentStore
+from autoposter_bot.infrastructure.persistence import build_persistence
 from autoposter_bot.platforms.factory import build_default_platform_registry
 
 
 settings = load_settings()
-base_store = SQLiteContentStore(settings.database_path)
+persistence = build_persistence(settings)
 registry = build_default_platform_registry(settings)
 publishing_application = PublishingApplication(registry)
 CurrentAuth = Annotated[AuthContext, Depends(get_auth_context)]
@@ -43,9 +41,11 @@ CurrentAuth = Annotated[AuthContext, Depends(get_auth_context)]
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    base_store.init_schema()
-    init_workspace_schema(base_store)
-    yield
+    persistence.init_schema()
+    try:
+        yield
+    finally:
+        persistence.close()
 
 
 def _cors_origins() -> list[str]:
@@ -58,8 +58,8 @@ def _cors_origins() -> list[str]:
 
 app = FastAPI(
     title="Autoposter Content OS API",
-    version="0.3.0",
-    description="Workspace-scoped web/API backend for Autoposter.",
+    version="0.4.0",
+    description=f"Workspace-scoped web/API backend for Autoposter ({persistence.backend}).",
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -76,8 +76,8 @@ def health() -> HealthView:
     return HealthView(status="ok", service="autoposter-api", version=app.version)
 
 
-def _store(auth: AuthContext) -> WorkspaceContentStore:
-    scoped = WorkspaceContentStore(base_store, auth.workspace_id)
+def _store(auth: AuthContext) -> Any:
+    scoped = persistence.scoped(auth.workspace_id)
     if scoped.get_workspace() is None:
         raise HTTPException(
             status_code=403,
