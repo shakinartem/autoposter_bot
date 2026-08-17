@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 
 
 class StrictModel(BaseModel):
@@ -63,6 +64,29 @@ class ContentPackageV1(StrictModel):
     variants: list[VariantPayload] = Field(min_length=1)
     sources: list[SourceRef] = Field(default_factory=list)
     quality: QualityPayload
+
+
+class PerformanceSnapshotRequest(StrictModel):
+    event_id: str | None = Field(default=None, max_length=255)
+    captured_at: datetime | None = None
+    metrics: dict[str, int | float] = Field(min_length=1)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("metrics")
+    @classmethod
+    def validate_metrics(cls, value: dict[str, int | float]) -> dict[str, int | float]:
+        cleaned: dict[str, int | float] = {}
+        for raw_key, raw_value in value.items():
+            key = raw_key.strip().lower()
+            if not key:
+                continue
+            number = float(raw_value)
+            if number < 0:
+                raise ValueError(f"metric {key} cannot be negative")
+            cleaned[key] = int(number) if number.is_integer() else number
+        if not cleaned:
+            raise ValueError("at least one numeric metric is required")
+        return cleaned
 
 
 def package_hash(package: ContentPackageV1) -> str:
