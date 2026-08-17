@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from autoposter_bot.application.content import ContentApplication
 from autoposter_bot.application.publishing import PublishingApplication
+from autoposter_bot.apps.api.accounts import build_accounts_router
 from autoposter_bot.apps.api.media import build_media_router
 from autoposter_bot.apps.api.schemas import (
     AccountView, ContentCreate, ContentUpdate, ContentView, HealthView, MediaPayload,
@@ -44,7 +45,7 @@ def _cors_origins() -> list[str]:
 
 app = FastAPI(
     title="Autoposter Content OS API",
-    version="0.6.0",
+    version="0.7.0",
     description=f"Workspace-scoped web/API backend for Autoposter ({persistence.backend}).",
     lifespan=lifespan,
 )
@@ -59,6 +60,12 @@ app.include_router(
     build_media_router(
         media_storage,
         workspace_exists=lambda workspace_id: persistence.scoped(workspace_id).get_workspace() is not None,
+    )
+)
+app.include_router(
+    build_accounts_router(
+        store_for_workspace=persistence.scoped,
+        platforms=registry.platforms(),
     )
 )
 
