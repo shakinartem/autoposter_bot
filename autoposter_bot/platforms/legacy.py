@@ -11,6 +11,60 @@ from autoposter_bot.platforms.base import CapabilitySpec, PlatformAdapter, Publi
 from autoposter_bot.publishers.base import Publisher
 
 
+_TRANSIENT_MARKERS = (
+    "rate limit",
+    "too many requests",
+    "429",
+    "timeout",
+    "timed out",
+    "temporarily unavailable",
+    "temporary failure",
+    "connection reset",
+    "connection aborted",
+    "connection error",
+    "network error",
+    "bad gateway",
+    "service unavailable",
+    "gateway timeout",
+    "internal server error",
+    " 500",
+    " 502",
+    " 503",
+    " 504",
+    "try again later",
+)
+_TERMINAL_MARKERS = (
+    "unauthorized",
+    "forbidden",
+    "access denied",
+    "permission denied",
+    "invalid token",
+    "token expired",
+    "not configured",
+    "unsupported",
+    "missing",
+    "required",
+    "bad request",
+    "validation",
+    " 400",
+    " 401",
+    " 403",
+)
+
+
+def _legacy_failure_semantics(detail: str) -> tuple[str, bool]:
+    normalized = f" {detail.strip().lower()}"
+    if any(marker in normalized for marker in _TRANSIENT_MARKERS):
+        if "429" in normalized or "rate limit" in normalized or "too many requests" in normalized:
+            return "rate_limited", True
+        return "transient_platform_error", True
+    if any(marker in normalized for marker in _TERMINAL_MARKERS):
+        return "auth_config_or_validation_error", False
+    # Unknown outcome is deliberately terminal. A remote POST may have succeeded
+    # before the response was lost; blind retry can duplicate a real social post.
+    return "legacy_publish_failed", False
+
+
 class LegacyPublisherAdapter(PlatformAdapter):
     def __init__(
         self,
@@ -63,13 +117,28 @@ class LegacyPublisherAdapter(PlatformAdapter):
         with context as resolved_variant:
             legacy_job = self._to_legacy_job(resolved_variant, publication, account_options)
             result = self.publisher.publish(legacy_job, legacy_job.targets[0], dry_run=dry_run)
+
+        error_code: str | None = result.error_code
+        retryable = result.retryable
+        if not result.ok and retryable is None:
+            fallback_code, fallback_retryable = _legacy_failure_semantics(result.detail)
+            error_code = error_code or fallback_code
+            retryable = fallback_retryable
+
         return PublicationResult(
             ok=result.ok,
             status="published" if result.ok else "failed",
+            external_post_id=result.external_post_id,
+            external_url=result.external_url,
             published_at=datetime.now() if result.ok and not dry_run else None,
+            error_code=None if result.ok else error_code,
             error_message=None if result.ok else result.detail,
-            retryable=not result.ok,
-            raw_response={"legacy_detail": result.detail},
+            retryable=bool(retryable) if not result.ok else False,
+            rate_limit_reset_at=result.rate_limit_reset_at,
+            raw_response={
+                "legacy_detail": result.detail,
+                "legacy_raw": result.raw_response,
+            },
         )
 
     def _to_legacy_job(self, variant: PlatformVariant, publication: Publication, account_options: dict[str, Any]) -> PostJob:
