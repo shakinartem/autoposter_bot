@@ -1,11 +1,47 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any
 
 from autoposter_bot.domain.content import PlatformVariant, Publication, PublicationStatus
 from autoposter_bot.platforms.base import PublicationResult
 from autoposter_bot.platforms.registry import PlatformRegistry
+
+
+_LEGACY_REMOTE_ID_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
+    "instagram": (
+        re.compile(r"Instagram\s+publish\s+succeeded(?:\s*\([^)]*\))?\s*:\s*([^\s]+)", re.IGNORECASE),
+    ),
+    "tiktok": (
+        re.compile(r"TikTok\s+publish\s+initialized\s*:\s*([^\s(]+)", re.IGNORECASE),
+    ),
+    "vk": (
+        re.compile(r"VK\s+publish\s+succeeded\s*:\s*([^\s]+)", re.IGNORECASE),
+    ),
+}
+
+
+def _recover_legacy_remote_id(platform: str, result: PublicationResult) -> PublicationResult:
+    """Normalize successful legacy adapter details into the canonical remote id.
+
+    Older adapters reported successful remote identifiers only in a human-readable
+    `legacy_detail` string. Keeping that identifier out of Publication breaks status
+    reconciliation and downstream analytics, so recover it at the application boundary
+    while the adapters are migrated to structured PublicationResult fields.
+    """
+    if not result.ok or result.external_post_id:
+        return result
+    raw = result.raw_response or {}
+    detail = raw.get("legacy_detail")
+    if not isinstance(detail, str) or not detail.strip():
+        return result
+    for pattern in _LEGACY_REMOTE_ID_PATTERNS.get(platform.lower(), ()):
+        match = pattern.search(detail)
+        if match:
+            result.external_post_id = match.group(1).strip()
+            break
+    return result
 
 
 class PublishingApplication:
@@ -65,6 +101,7 @@ class PublishingApplication:
             account_options=account_options,
             dry_run=dry_run,
         )
+        result = _recover_legacy_remote_id(publication.platform, result)
 
         if dry_run:
             return result
