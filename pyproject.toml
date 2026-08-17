@@ -1,7 +1,7 @@
 [project]
 name = "autoposter-bot"
-version = "0.5.0"
-description = "Workspace-scoped web/API content distribution platform with encrypted social credentials"
+version = "0.6.0"
+description = "Workspace-scoped content distribution platform with encrypted credentials and media storage"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -12,6 +12,8 @@ dependencies = [
   "uvicorn[standard]>=0.35.0",
   "psycopg[binary,pool]>=3.3,<4",
   "cryptography>=46,<51",
+  "boto3>=1.40,<2",
+  "python-multipart>=0.0.20,<1",
 ]
 
 [project.optional-dependencies]
