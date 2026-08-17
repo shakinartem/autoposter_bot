@@ -8,12 +8,7 @@ export type PlatformCapability = {
   limits: Record<string, number>;
 };
 
-export type Workspace = {
-  id: number;
-  name: string;
-  owner_user_id: number;
-  created_at: string;
-};
+export type Workspace = { id: number; name: string; owner_user_id: number; created_at: string };
 
 export type MediaAsset = {
   id?: string | null;
@@ -59,6 +54,27 @@ export type SocialAccount = {
   created_at: string;
 };
 
+export type ConnectionFieldSpec = {
+  type: "text" | "secret" | "select";
+  label: string;
+  required?: boolean;
+  placeholder?: string;
+  options?: string[];
+  default?: unknown;
+};
+
+export type AccountConnectionSpec = {
+  platform: string;
+  title: string;
+  destination: {
+    label: string;
+    placeholder?: string;
+    required?: boolean;
+  };
+  fields: Record<string, ConnectionFieldSpec>;
+  notes?: string;
+};
+
 export type Publication = {
   id: string;
   variant_id: string;
@@ -89,10 +105,7 @@ export type PublishResult = {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_URL}${path}`, {
     ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...init?.headers,
-    },
+    headers: { "Content-Type": "application/json", ...init?.headers },
   });
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
@@ -105,10 +118,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export async function uploadMedia(file: File): Promise<MediaAsset> {
   const form = new FormData();
   form.append("file", file);
-  const response = await fetch(`${API_URL}/media`, {
-    method: "POST",
-    body: form,
-  });
+  const response = await fetch(`${API_URL}/media`, { method: "POST", body: form });
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
     throw new Error(typeof payload?.detail === "string" ? payload.detail : `Media upload failed: ${response.status}`);
@@ -119,6 +129,24 @@ export async function uploadMedia(file: File): Promise<MediaAsset> {
 export function getWorkspace(): Promise<Workspace> { return request("/workspace"); }
 export function listPlatforms(): Promise<Record<string, PlatformCapability>> { return request("/platforms"); }
 export function listAccounts(): Promise<SocialAccount[]> { return request("/accounts"); }
+export function listAccountConnectionSpecs(): Promise<Record<string, AccountConnectionSpec>> { return request("/account-connections"); }
+
+export function createAccount(payload: {
+  name: string;
+  platform: string;
+  destination?: string | null;
+  options?: Record<string, unknown>;
+}): Promise<SocialAccount> {
+  return request("/accounts", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function updateAccount(
+  accountId: number,
+  payload: { name?: string; destination?: string | null; options?: Record<string, unknown> },
+): Promise<SocialAccount> {
+  return request(`/accounts/${accountId}`, { method: "PATCH", body: JSON.stringify(payload) });
+}
+
 export function listContent(): Promise<ContentItem[]> { return request("/content"); }
 
 export function createContent(payload: {
