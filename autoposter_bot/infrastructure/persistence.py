@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from autoposter_bot.config import Settings
+from autoposter_bot.infrastructure.auth_store import AuthStore
 from autoposter_bot.infrastructure.content_store import SQLiteContentStore
 from autoposter_bot.infrastructure.credentials import CredentialCipher, SecureContentStore
 from autoposter_bot.infrastructure.postgres_queue import PostgresPublicationQueue
@@ -19,11 +20,13 @@ class PersistenceRuntime:
     backend: str
     store: SecureContentStore
     queue: Any
+    auth: AuthStore
 
     def init_schema(self) -> None:
         self.store.init_schema()
         if self.backend == "sqlite":
             init_workspace_schema(self.store.base)
+        self.auth.init_schema()
 
     def scoped(self, workspace_id: int) -> SecureContentStore:
         if self.backend == "postgres":
@@ -58,6 +61,7 @@ def build_persistence(settings: Settings) -> PersistenceRuntime:
             backend="postgres",
             store=SecureContentStore(raw_store, backend="postgres", cipher=cipher),
             queue=PostgresPublicationQueue(raw_store),
+            auth=AuthStore(backend="postgres", connect=raw_store.connect),
         )
 
     raw_store = SQLiteContentStore(settings.database_path)
@@ -68,4 +72,5 @@ def build_persistence(settings: Settings) -> PersistenceRuntime:
         backend="sqlite",
         store=SecureContentStore(raw_store, backend="sqlite", cipher=cipher),
         queue=SQLitePublicationQueue(settings.database_path),
+        auth=AuthStore(backend="sqlite", connect=raw_store.connect),
     )
