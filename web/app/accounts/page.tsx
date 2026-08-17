@@ -3,12 +3,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   type AccountConnectionSpec,
+  type OAuthProviderStatus,
   type SocialAccount,
   type Workspace,
   createAccount,
   getWorkspace,
   listAccountConnectionSpecs,
   listAccounts,
+  listOAuthProviders,
+  startOAuth,
 } from "@/lib/api";
 import styles from "./accounts.module.css";
 
@@ -16,6 +19,7 @@ export default function AccountsPage() {
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [accounts, setAccounts] = useState<SocialAccount[]>([]);
   const [specs, setSpecs] = useState<Record<string, AccountConnectionSpec>>({});
+  const [oauthProviders, setOauthProviders] = useState<Record<string, OAuthProviderStatus>>({});
   const [platform, setPlatform] = useState("");
   const [name, setName] = useState("");
   const [destination, setDestination] = useState("");
@@ -25,17 +29,31 @@ export default function AccountsPage() {
 
   const load = useCallback(async () => {
     try {
-      const [workspaceData, accountData, specData] = await Promise.all([
+      const [workspaceData, accountData, specData, oauthData] = await Promise.all([
         getWorkspace(),
         listAccounts(),
         listAccountConnectionSpecs(),
+        listOAuthProviders(),
       ]);
       setWorkspace(workspaceData);
       setAccounts(accountData);
       setSpecs(specData);
+      setOauthProviders(oauthData);
       const first = Object.keys(specData)[0] ?? "";
       setPlatform((current) => current || first);
-      setNotice("Подключения синхронизированы");
+
+      const query = new URLSearchParams(window.location.search);
+      const oauthStatus = query.get("oauth");
+      const detail = query.get("detail");
+      if (oauthStatus === "connected") {
+        setNotice(`${detail || "OAuth"}: аккаунт подключён`);
+        window.history.replaceState({}, "", window.location.pathname);
+      } else if (oauthStatus === "error") {
+        setNotice(detail || "OAuth подключение завершилось ошибкой");
+        window.history.replaceState({}, "", window.location.pathname);
+      } else {
+        setNotice("Подключения синхронизированы");
+      }
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Не удалось загрузить подключения");
     }
@@ -46,6 +64,7 @@ export default function AccountsPage() {
   }, [load]);
 
   const spec = specs[platform];
+  const oauthReady = Boolean(oauthProviders[platform]?.configured);
 
   useEffect(() => {
     if (!spec) return;
@@ -65,6 +84,19 @@ export default function AccountsPage() {
     }
     return result;
   }, [accounts]);
+
+  async function connectOAuth() {
+    if (!platform || !oauthReady) return;
+    setBusy(true);
+    try {
+      setNotice(`Открываю безопасное подключение ${spec?.title ?? platform}…`);
+      const result = await startOAuth(platform);
+      window.location.assign(result.authorization_url);
+    } catch (error) {
+      setBusy(false);
+      setNotice(error instanceof Error ? error.message : "Не удалось начать OAuth подключение");
+    }
+  }
 
   async function submit() {
     if (!spec) return;
@@ -154,7 +186,27 @@ export default function AccountsPage() {
 
             {spec ? (
               <>
-                {spec.notes ? <div className={styles.note}>{spec.notes}</div> : null}
+                {oauthReady ? (
+                  <>
+                    <div className={styles.note}>
+                      Рекомендуемый путь: авторизация через {spec.title}. Токен вернётся напрямую на backend и будет зашифрован до записи в БД.
+                    </div>
+                    <button
+                      className={styles.submit}
+                      type="button"
+                      disabled={busy}
+                      onClick={() => void connectOAuth()}
+                    >
+                      {busy ? "Подключаю…" : `Подключить ${spec.title} через OAuth`}
+                    </button>
+                    <div className={styles.security}>
+                      Ниже остаётся ручное подключение как аварийный fallback для тестовых и legacy credentials.
+                    </div>
+                  </>
+                ) : spec.notes ? (
+                  <div className={styles.note}>{spec.notes}</div>
+                ) : null}
+
                 <label className={styles.field}>
                   Название подключения
                   <input
@@ -190,7 +242,7 @@ export default function AccountsPage() {
                   disabled={busy || !name.trim()}
                   onClick={() => void submit()}
                 >
-                  {busy ? "Сохраняю…" : `Подключить ${spec.title}`}
+                  {busy ? "Сохраняю…" : `Сохранить ${spec.title} вручную`}
                 </button>
                 <div className={styles.security}>
                   <strong>Security boundary.</strong> Secret-поля уходят через server-side BFF, шифруются перед записью и не входят в AccountView.
