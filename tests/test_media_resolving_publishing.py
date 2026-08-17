@@ -2,15 +2,15 @@ from contextlib import contextmanager
 
 from autoposter_bot.application.media_publishing import MediaResolvingPublishingApplication
 from autoposter_bot.domain.content import MediaAsset, PlatformVariant, Publication
-from autoposter_bot.platforms.base import PlatformAdapter, PlatformCapability, PublicationResult
+from autoposter_bot.platforms.base import CapabilitySpec, PlatformAdapter, PublicationResult
 from autoposter_bot.platforms.registry import PlatformRegistry
 
 
 class RecordingAdapter(PlatformAdapter):
-    name = "telegram"
+    platform = "telegram"
 
-    def capability(self):
-        return PlatformCapability(platform="telegram")
+    def capabilities(self):
+        return CapabilitySpec(platform="telegram", content_types=("post",))
 
     def validate(self, variant):
         return []
