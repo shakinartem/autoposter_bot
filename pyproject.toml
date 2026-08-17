@@ -1,7 +1,7 @@
 [project]
 name = "autoposter-bot"
-version = "0.6.0"
-description = "Workspace-scoped content distribution platform with encrypted credentials and media storage"
+version = "0.7.0"
+description = "Workspace-scoped content distribution platform with encrypted credentials, media storage and revocable user sessions"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -27,6 +27,7 @@ autoposter = "autoposter_bot.cli:main"
 autoposter-api = "autoposter_bot.apps.api.runner:main"
 autoposter-worker = "autoposter_bot.apps.worker.runner:main"
 autoposter-workspace = "autoposter_bot.apps.workspace_cli:main"
+autoposter-session = "autoposter_bot.apps.session_cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]
