@@ -1,10 +1,12 @@
-import json
+from datetime import datetime
 
 import pytest
 from pydantic import ValidationError
 
 from autoposter_bot.application.content_factory_bridge import ContentFactoryBridge, IdempotencyConflict
+from autoposter_bot.application.content_factory_feedback import ContentFactoryFeedback
 from autoposter_bot.apps.api.content_factory_contract import ContentPackageV1, package_hash
+from autoposter_bot.domain.content import Publication
 from autoposter_bot.infrastructure.content_store import SQLiteContentStore
 
 
@@ -91,3 +93,68 @@ def test_same_idempotency_key_with_changed_payload_conflicts(tmp_path):
 
     with pytest.raises(IdempotencyConflict):
         bridge.ingest(package_fixture(body="A materially changed payload."), idempotency_key="delivery-1", supported_platforms={"telegram"})
+
+
+def test_performance_snapshot_is_durable_idempotent_and_delivered(monkeypatch, tmp_path):
+    store = SQLiteContentStore(tmp_path / "autoposter.sqlite3")
+    store.init_schema()
+    bridge = ContentFactoryBridge(store, NoMediaIngestor())
+    bridge.init_schema()
+    receipt = bridge.ingest(package_fixture(), idempotency_key="delivery-1", supported_platforms={"telegram"})
+
+    with store.connect() as connection:
+        cursor = connection.execute(
+            "INSERT INTO accounts (name, platform, destination, options_json, created_at) VALUES (?, ?, ?, '{}', ?)",
+            ("analytics-test", "telegram", "@channel", datetime.now().isoformat()),
+        )
+        account_id = int(cursor.lastrowid)
+
+    publication = Publication(
+        variant_id=receipt["variants"][0]["id"],
+        platform="telegram",
+        account_id=account_id,
+        external_post_id="telegram-post-123",
+        external_url="https://t.me/channel/123",
+    )
+    store.save_publication(publication)
+
+    feedback = ContentFactoryFeedback(store, endpoint="http://factory/performance/ingest", token="secret")
+    feedback.init_schema()
+    feedback.init_schema()  # restart safety
+
+    first = feedback.record_snapshot(
+        publication.id,
+        event_id="evt-1",
+        metrics={"views": 100, "clicks": 4, "leads": 1},
+    )
+    duplicate = feedback.record_snapshot(
+        publication.id,
+        event_id="evt-1",
+        metrics={"views": 100, "clicks": 4, "leads": 1},
+    )
+    assert first["status"] == "accepted"
+    assert duplicate["status"] == "duplicate"
+
+    calls = []
+
+    class Response:
+        status_code = 202
+        text = "accepted"
+
+    def fake_post(url, *, json, headers, timeout):
+        calls.append((url, json, headers, timeout))
+        return Response()
+
+    monkeypatch.setattr("autoposter_bot.application.content_factory_feedback.requests.post", fake_post)
+    stats = feedback.dispatch()
+    assert stats == {"sent": 1, "failed": 0, "disabled": 0}
+    assert calls[0][1]["content_id"] == package_fixture().content_id
+    assert calls[0][1]["external_publication_id"] == "telegram-post-123"
+    assert calls[0][1]["metrics"]["views"] == 100
+    assert calls[0][2]["X-Performance-Token"] == "secret"
+
+    with store.connect() as connection:
+        snapshot_count = connection.execute("SELECT COUNT(*) AS count FROM content_factory_analytics_snapshots").fetchone()["count"]
+        feedback_row = connection.execute("SELECT status FROM content_factory_feedback_outbox WHERE event_id = 'evt-1'").fetchone()
+    assert snapshot_count == 1
+    assert feedback_row["status"] == "sent"
