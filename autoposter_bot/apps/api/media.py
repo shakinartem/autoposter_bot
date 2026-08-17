@@ -6,6 +6,7 @@ from typing import Annotated, Callable
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 
+from autoposter_bot.apps.api.authorization import require_minimum_role
 from autoposter_bot.apps.api.schemas import MediaPayload
 from autoposter_bot.apps.api.security import AuthContext, get_auth_context
 from autoposter_bot.domain.content import MediaAsset
@@ -27,6 +28,7 @@ def build_media_router(
         auth: CurrentAuth,
         file: UploadFile = File(...),
     ) -> MediaPayload:
+        require_minimum_role(auth.role, "editor")
         if not workspace_exists(auth.workspace_id):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
