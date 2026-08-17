@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 
 const BACKEND_URL = (process.env.AUTOPOSTER_API_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
 const API_KEY = process.env.AUTOPOSTER_API_KEY ?? "";
+const AUTH_MODE = (process.env.AUTOPOSTER_WEB_AUTH_MODE ?? "service").trim().toLowerCase();
+const SESSION_COOKIE = "autoposter_session";
 
 type RouteContext = {
   params: Promise<{ path: string[] }>;
@@ -9,10 +11,33 @@ type RouteContext = {
 
 type StreamingRequestInit = RequestInit & { duplex?: "half" };
 
+function credentialFor(request: NextRequest): string | null {
+  if (AUTH_MODE === "session") {
+    return request.cookies.get(SESSION_COOKIE)?.value ?? null;
+  }
+  if (AUTH_MODE === "service") {
+    return API_KEY || null;
+  }
+  return null;
+}
+
 async function proxy(request: NextRequest, context: RouteContext) {
-  if (!API_KEY) {
+  const credential = credentialFor(request);
+  if (!credential) {
+    const status = AUTH_MODE === "session" ? 401 : 503;
     return NextResponse.json(
-      { detail: "AUTOPOSTER_API_KEY is not configured on the web server" },
+      {
+        detail:
+          AUTH_MODE === "session"
+            ? "Authenticated Autoposter session required"
+            : "AUTOPOSTER_API_KEY is not configured for service auth mode",
+      },
+      { status },
+    );
+  }
+  if (!["service", "session"].includes(AUTH_MODE)) {
+    return NextResponse.json(
+      { detail: "AUTOPOSTER_WEB_AUTH_MODE must be either service or session" },
       { status: 503 },
     );
   }
@@ -21,7 +46,7 @@ async function proxy(request: NextRequest, context: RouteContext) {
   const backendPath = `/api/v1/${path.map(encodeURIComponent).join("/")}`;
   const target = `${BACKEND_URL}${backendPath}${request.nextUrl.search}`;
   const headers = new Headers();
-  headers.set("Authorization", `Bearer ${API_KEY}`);
+  headers.set("Authorization", `Bearer ${credential}`);
   const contentType = request.headers.get("content-type");
   if (contentType) headers.set("Content-Type", contentType);
 
