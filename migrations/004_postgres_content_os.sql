@@ -150,3 +150,5 @@ CREATE TABLE IF NOT EXISTS analytics_snapshots (
     metrics_json JSONB NOT NULL DEFAULT '{}'::jsonb,
     captured_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE INDEX IF NOT EXISTS idx_analytics_snapshots_publication_captured
+    ON analytics_snapshots(publication_id, captured_at DESC);
