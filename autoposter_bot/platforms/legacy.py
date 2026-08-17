@@ -5,33 +5,24 @@ from typing import Any
 
 from autoposter_bot.domain.content import MediaAsset, PlatformVariant, Publication
 from autoposter_bot.models import MediaItem, PostJob, Target
-from autoposter_bot.platforms.base import (
-    CapabilitySpec,
-    PlatformAdapter,
-    PublicationResult,
-    ValidationIssue,
-)
+from autoposter_bot.platforms.base import CapabilitySpec, PlatformAdapter, PublicationResult, ValidationIssue
 from autoposter_bot.publishers.base import Publisher
 
 
 class LegacyPublisherAdapter(PlatformAdapter):
-    """Bridge old Publisher implementations into the new platform contract.
-
-    This keeps the current Telegram/VK/Instagram/TikTok integrations usable while
-    the product is migrated to Content -> Variant -> Publication.
-    """
-
     def __init__(
         self,
         publisher: Publisher,
         *,
         content_types: tuple[str, ...] = ("text", "image", "video", "carousel"),
+        fields: dict[str, dict[str, Any]] | None = None,
         features: dict[str, bool] | None = None,
         limits: dict[str, int] | None = None,
     ) -> None:
         self.publisher = publisher
         self.platform = publisher.platform
         self._content_types = content_types
+        self._fields = fields or {}
         self._features = features or {}
         self._limits = limits or {}
 
@@ -39,6 +30,7 @@ class LegacyPublisherAdapter(PlatformAdapter):
         return CapabilitySpec(
             platform=self.platform,
             content_types=self._content_types,
+            fields=self._fields,
             features=self._features,
             limits=self._limits,
         )
@@ -46,43 +38,20 @@ class LegacyPublisherAdapter(PlatformAdapter):
     def validate(self, variant: PlatformVariant) -> list[ValidationIssue]:
         issues: list[ValidationIssue] = []
         if variant.platform.lower() != self.platform.lower():
-            issues.append(
-                ValidationIssue(
-                    field="platform",
-                    code="platform_mismatch",
-                    message=f"Variant is for {variant.platform}, adapter is {self.platform}",
-                )
-            )
+            issues.append(ValidationIssue("platform", f"Variant is for {variant.platform}, adapter is {self.platform}", "platform_mismatch"))
         if not variant.text and not variant.media:
-            issues.append(
-                ValidationIssue(
-                    field="content",
-                    code="empty_content",
-                    message="Variant must contain text or media",
-                )
-            )
+            issues.append(ValidationIssue("content", "Variant must contain text or media", "empty_content"))
+        for field_name, spec in self._fields.items():
+            if spec.get("required") and variant.fields.get(field_name) in (None, ""):
+                issues.append(ValidationIssue(field_name, f"{field_name} is required for {self.platform}", "required_field"))
         return issues
 
-    def publish(
-        self,
-        variant: PlatformVariant,
-        publication: Publication,
-        *,
-        account_options: dict[str, Any],
-        dry_run: bool = False,
-    ) -> PublicationResult:
+    def publish(self, variant: PlatformVariant, publication: Publication, *, account_options: dict[str, Any], dry_run: bool = False) -> PublicationResult:
         issues = self.validate(variant)
         if issues:
-            return PublicationResult(
-                ok=False,
-                status="invalid",
-                error_code=issues[0].code,
-                error_message=issues[0].message,
-            )
-
+            return PublicationResult(ok=False, status="invalid", error_code=issues[0].code, error_message=issues[0].message)
         legacy_job = self._to_legacy_job(variant, publication, account_options)
-        target = legacy_job.targets[0]
-        result = self.publisher.publish(legacy_job, target, dry_run=dry_run)
+        result = self.publisher.publish(legacy_job, legacy_job.targets[0], dry_run=dry_run)
         return PublicationResult(
             ok=result.ok,
             status="published" if result.ok else "failed",
@@ -92,12 +61,7 @@ class LegacyPublisherAdapter(PlatformAdapter):
             raw_response={"legacy_detail": result.detail},
         )
 
-    def _to_legacy_job(
-        self,
-        variant: PlatformVariant,
-        publication: Publication,
-        account_options: dict[str, Any],
-    ) -> PostJob:
+    def _to_legacy_job(self, variant: PlatformVariant, publication: Publication, account_options: dict[str, Any]) -> PostJob:
         media_items = [self._to_legacy_media(asset, index) for index, asset in enumerate(variant.media)]
         content_type = str(variant.fields.get("content_type") or self._infer_content_type(variant))
         return PostJob(
@@ -106,37 +70,29 @@ class LegacyPublisherAdapter(PlatformAdapter):
             text=variant.text,
             media_items=media_items,
             scheduled_at=publication.scheduled_at,
-            targets=[
-                Target(
-                    platform=self.platform,
-                    destination=publication.destination,
-                    account_id=publication.account_id,
-                    options=account_options,
-                )
-            ],
+            targets=[Target(
+                platform=self.platform,
+                destination=publication.destination,
+                account_id=publication.account_id,
+                options={**account_options, **variant.fields},
+            )],
             metadata={
                 "content_id": variant.content_id,
                 "variant_id": variant.id,
                 "publication_id": publication.id,
+                "platform_fields": dict(variant.fields),
             },
         )
 
     @staticmethod
     def _to_legacy_media(asset: MediaAsset, index: int) -> MediaItem:
-        return MediaItem(
-            source=asset.source,
-            media_type=asset.media_type,
-            order_index=index,
-            options=dict(asset.metadata),
-        )
+        return MediaItem(source=asset.source, media_type=asset.media_type, order_index=index, options=dict(asset.metadata))
 
     def _infer_content_type(self, variant: PlatformVariant) -> str:
         if not variant.media:
             return "text"
         if len(variant.media) > 1:
-            if self.platform == "instagram":
-                return "instagram_carousel"
-            return "carousel"
+            return "instagram_carousel" if self.platform == "instagram" else "carousel"
         media_type = variant.media[0].media_type
         if self.platform == "instagram":
             return "instagram_video" if media_type == "video" else "instagram_feed_image"
