@@ -5,10 +5,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from autoposter_bot.config import Settings
+from autoposter_bot.infrastructure.analytics_store import AnalyticsStore
 from autoposter_bot.infrastructure.auth_store import AuthStore
 from autoposter_bot.infrastructure.content_store import SQLiteContentStore
 from autoposter_bot.infrastructure.credentials import CredentialCipher, SecureContentStore
 from autoposter_bot.infrastructure.identity_store import IdentityStore
+from autoposter_bot.infrastructure.invitation_store import InvitationStore
 from autoposter_bot.infrastructure.login_grant_store import LoginGrantStore
 from autoposter_bot.infrastructure.postgres_queue import PostgresPublicationQueue
 from autoposter_bot.infrastructure.postgres_store import PostgresContentStore
@@ -26,6 +28,8 @@ class PersistenceRuntime:
     auth: AuthStore
     identities: IdentityStore
     login_grants: LoginGrantStore
+    invitations: InvitationStore
+    analytics: AnalyticsStore
 
     def init_schema(self) -> None:
         self.store.init_schema()
@@ -35,6 +39,8 @@ class PersistenceRuntime:
         self.auth.init_schema()
         self.identities.init_schema()
         self.login_grants.init_schema()
+        self.invitations.init_schema()
+        self.analytics.init_schema()
 
     def scoped(self, workspace_id: int) -> SecureContentStore:
         if self.backend == "postgres":
@@ -77,6 +83,8 @@ def _runtime(
             connect=connect,
             ttl_seconds=int(os.getenv("AUTOPOSTER_LOGIN_GRANT_TTL_SECONDS", "120")),
         ),
+        invitations=InvitationStore(backend=backend, connect=connect),
+        analytics=AnalyticsStore(backend=backend, connect=connect),
     )
 
 
