@@ -35,6 +35,11 @@ def test_postgres_workspace_content_and_atomic_queue():
                 "INSERT INTO accounts(owner_user_id, name, platform, destination, options_json, created_at) VALUES (%s, %s, %s, %s, %s::jsonb, %s) RETURNING id",
                 (101, "Telegram", "telegram", "-100123", '{"access_token":"secret"}', now),
             ).fetchone()["id"]
+            index_row = db.execute(
+                "SELECT indexname FROM pg_indexes WHERE indexname = %s",
+                ("idx_analytics_snapshots_publication_captured",),
+            ).fetchone()
+            assert index_row is not None
 
         scoped = store.scoped(int(workspace_id))
         content = ContentApplication(scoped).create(title="Postgres", body="Content body")
@@ -86,10 +91,9 @@ def test_postgres_auth_sessions_follow_live_workspace_membership():
                 ).fetchone()["id"]
             )
 
-        # Schema init is restart-safe and also repairs owner membership for newly
-        # imported or created workspaces.
         auth.init_schema()
-        assert auth.get_membership(workspace_id, 201)["role"] == "owner"
+        owner = auth.get_membership(workspace_id, 201)
+        assert owner is not None and owner["role"] == "owner"
         auth.set_membership(workspace_id, 202, "viewer")
 
         token, issued = auth.create_session(
