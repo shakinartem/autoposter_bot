@@ -13,6 +13,7 @@ from autoposter_bot.application.publishing import PublishingApplication
 from autoposter_bot.apps.api.accounts import build_accounts_router
 from autoposter_bot.apps.api.auth import build_auth_router
 from autoposter_bot.apps.api.authorization import require_minimum_role
+from autoposter_bot.apps.api.login import build_public_login_router
 from autoposter_bot.apps.api.media import build_media_router
 from autoposter_bot.apps.api.oauth import build_oauth_router
 from autoposter_bot.apps.api.schemas import (
@@ -41,6 +42,7 @@ from autoposter_bot.infrastructure.media_storage import build_media_storage
 from autoposter_bot.infrastructure.persistence import build_persistence
 from autoposter_bot.integrations.credential_refresh import CredentialRefreshService
 from autoposter_bot.integrations.instagram_oauth import InstagramOAuthProvider
+from autoposter_bot.integrations.telegram_oidc import TelegramOIDCProvider
 from autoposter_bot.integrations.tiktok_oauth import TikTokOAuthProvider
 from autoposter_bot.platforms.factory import build_default_platform_registry
 
@@ -52,6 +54,7 @@ registry = build_default_platform_registry(settings)
 publishing_application = PublishingApplication(registry)
 tiktok_oauth = TikTokOAuthProvider(settings)
 instagram_oauth = InstagramOAuthProvider()
+telegram_login = TelegramOIDCProvider(settings)
 credential_refresh = CredentialRefreshService(tiktok=tiktok_oauth, instagram=instagram_oauth)
 CurrentAuth = Annotated[AuthContext, Depends(get_auth_context)]
 
@@ -74,7 +77,7 @@ def _cors_origins() -> list[str]:
 
 app = FastAPI(
     title="Autoposter Content OS API",
-    version="0.9.0",
+    version="0.10.0",
     description=f"Workspace-scoped web/API backend for Autoposter ({persistence.backend}).",
     lifespan=lifespan,
 )
@@ -84,6 +87,14 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
+)
+app.include_router(
+    build_public_login_router(
+        telegram=telegram_login,
+        identities=persistence.identities,
+        grants=persistence.login_grants,
+        auth_store=persistence.auth,
+    )
 )
 app.include_router(build_auth_router(persistence.auth))
 app.include_router(
