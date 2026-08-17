@@ -40,7 +40,19 @@ jobs:
       - name: Compile Python package
         run: python -m compileall autoposter_bot
       - name: Run tests
-        run: pytest -q
+        shell: bash
+        run: |
+          set -o pipefail
+          pytest -q 2>&1 | tee /tmp/pytest.log || {
+            tail -n 160 /tmp/pytest.log
+            while IFS= read -r line; do
+              safe=${line//'%'/'%25'}
+              safe=${safe//$'\r'/'%0D'}
+              safe=${safe//$'\n'/'%0A'}
+              echo "::error title=pytest::$safe"
+            done < <(tail -n 100 /tmp/pytest.log)
+            exit 1
+          }
 
   web:
     runs-on: ubuntu-latest
