@@ -76,6 +76,11 @@ export type AccountConnectionSpec = {
   notes?: string;
 };
 
+export type OAuthProviderStatus = {
+  platform: string;
+  configured: boolean;
+};
+
 export type Publication = {
   id: string;
   variant_id: string;
@@ -134,6 +139,13 @@ export function getWorkspace(): Promise<Workspace> { return request("/workspace"
 export function listPlatforms(): Promise<Record<string, PlatformCapability>> { return request("/platforms"); }
 export function listAccounts(): Promise<SocialAccount[]> { return request("/accounts"); }
 export function listAccountConnectionSpecs(): Promise<Record<string, AccountConnectionSpec>> { return request("/account-connections"); }
+export function listOAuthProviders(): Promise<Record<string, OAuthProviderStatus>> { return request("/oauth/providers"); }
+
+export function startOAuth(platform: string, returnPath = "/accounts"): Promise<{ authorization_url: string }> {
+  return request(`/oauth/${encodeURIComponent(platform)}/start?return_path=${encodeURIComponent(returnPath)}`, {
+    method: "POST",
+  });
+}
 
 export function createAccount(payload: {
   name: string;
