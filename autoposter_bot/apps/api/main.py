@@ -11,6 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from autoposter_bot.application.content import ContentApplication
 from autoposter_bot.application.publishing import PublishingApplication
 from autoposter_bot.apps.api.accounts import build_accounts_router
+from autoposter_bot.apps.api.auth import build_auth_router
+from autoposter_bot.apps.api.authorization import require_minimum_role
 from autoposter_bot.apps.api.media import build_media_router
 from autoposter_bot.apps.api.oauth import build_oauth_router
 from autoposter_bot.apps.api.schemas import (
@@ -28,7 +30,11 @@ from autoposter_bot.apps.api.schemas import (
     VariantView,
     WorkspaceView,
 )
-from autoposter_bot.apps.api.security import AuthContext, get_auth_context
+from autoposter_bot.apps.api.security import (
+    AuthContext,
+    configure_session_resolver,
+    get_auth_context,
+)
 from autoposter_bot.config import load_settings
 from autoposter_bot.domain.content import MediaAsset, Publication, PublicationStatus
 from autoposter_bot.infrastructure.media_storage import build_media_storage
@@ -46,16 +52,18 @@ registry = build_default_platform_registry(settings)
 publishing_application = PublishingApplication(registry)
 tiktok_oauth = TikTokOAuthProvider(settings)
 instagram_oauth = InstagramOAuthProvider()
-credential_refresh = CredentialRefreshService(tiktok=tiktok_oauth)
+credential_refresh = CredentialRefreshService(tiktok=tiktok_oauth, instagram=instagram_oauth)
 CurrentAuth = Annotated[AuthContext, Depends(get_auth_context)]
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     persistence.init_schema()
+    configure_session_resolver(persistence.auth.resolve_session)
     try:
         yield
     finally:
+        configure_session_resolver(None)
         persistence.close()
 
 
@@ -66,7 +74,7 @@ def _cors_origins() -> list[str]:
 
 app = FastAPI(
     title="Autoposter Content OS API",
-    version="0.8.0",
+    version="0.9.0",
     description=f"Workspace-scoped web/API backend for Autoposter ({persistence.backend}).",
     lifespan=lifespan,
 )
@@ -77,6 +85,7 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
+app.include_router(build_auth_router(persistence.auth))
 app.include_router(
     build_media_router(
         media_storage,
@@ -149,6 +158,7 @@ def list_accounts(
 
 @app.post("/api/v1/content", response_model=ContentView, status_code=201)
 def create_content(payload: ContentCreate, auth: CurrentAuth) -> ContentView:
+    require_minimum_role(auth.role, "editor")
     scoped = _store(auth)
     item = ContentApplication(scoped).create(
         title=payload.title,
@@ -182,6 +192,7 @@ def get_content(content_id: str, auth: CurrentAuth) -> ContentView:
 
 @app.patch("/api/v1/content/{content_id}", response_model=ContentView)
 def update_content(content_id: str, payload: ContentUpdate, auth: CurrentAuth) -> ContentView:
+    require_minimum_role(auth.role, "editor")
     scoped = _store(auth)
     changes = payload.model_dump(exclude_unset=True)
     if "media" in changes:
@@ -217,6 +228,7 @@ def upsert_variant(
     payload: VariantUpsert,
     auth: CurrentAuth,
 ) -> VariantView:
+    require_minimum_role(auth.role, "editor")
     scoped = _store(auth)
     try:
         registry.get(platform)
@@ -255,6 +267,7 @@ def create_publication(
     payload: PublicationCreate,
     auth: CurrentAuth,
 ) -> PublicationView:
+    require_minimum_role(auth.role, "editor")
     scoped = _store(auth)
     variant = scoped.get_variant(variant_id)
     if variant is None:
@@ -307,6 +320,7 @@ def get_publication(publication_id: str, auth: CurrentAuth) -> PublicationView:
 
 @app.post("/api/v1/publications/{publication_id}/publish", response_model=PublishResultView)
 def publish(publication_id: str, payload: PublishRequest, auth: CurrentAuth) -> PublishResultView:
+    require_minimum_role(auth.role, "editor")
     scoped = _store(auth)
     publication = scoped.get_publication(publication_id)
     if publication is None:
