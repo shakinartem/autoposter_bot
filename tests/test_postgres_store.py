@@ -7,6 +7,7 @@ import pytest
 
 from autoposter_bot.application.content import ContentApplication
 from autoposter_bot.domain.content import Publication, PublicationStatus
+from autoposter_bot.infrastructure.auth_store import AuthStore
 from autoposter_bot.infrastructure.postgres_queue import PostgresPublicationQueue
 from autoposter_bot.infrastructure.postgres_store import PostgresContentStore
 
@@ -56,5 +57,65 @@ def test_postgres_workspace_content_and_atomic_queue():
         assert claimed.status == PublicationStatus.QUEUED
         assert scoped.get_content(content.id) is not None
         assert scoped.get_account(int(account_id)) is not None
+    finally:
+        store.close()
+
+
+def test_postgres_auth_sessions_follow_live_workspace_membership():
+    assert POSTGRES_URL is not None
+    store = PostgresContentStore(POSTGRES_URL)
+    auth = AuthStore(backend="postgres", connect=store.connect)
+    try:
+        store.init_schema()
+        auth.init_schema()
+        now = datetime.now()
+        with store.connect() as db:
+            db.execute("TRUNCATE TABLE users CASCADE")
+            db.execute(
+                "INSERT INTO users(id, telegram_user_id, username, full_name, is_registered, created_at) VALUES (%s, %s, %s, %s, TRUE, %s)",
+                (201, 900201, "owner2", "Owner Two", now),
+            )
+            db.execute(
+                "INSERT INTO users(id, telegram_user_id, username, full_name, is_registered, created_at) VALUES (%s, %s, %s, %s, TRUE, %s)",
+                (202, 900202, "member2", "Member Two", now),
+            )
+            workspace_id = int(
+                db.execute(
+                    "INSERT INTO workspaces(name, owner_user_id, created_at) VALUES (%s, %s, %s) RETURNING id",
+                    ("Auth Production", 201, now),
+                ).fetchone()["id"]
+            )
+
+        # Schema init is restart-safe and also repairs owner membership for newly
+        # imported or created workspaces.
+        auth.init_schema()
+        assert auth.get_membership(workspace_id, 201)["role"] == "owner"
+        auth.set_membership(workspace_id, 202, "viewer")
+
+        token, issued = auth.create_session(
+            user_id=202,
+            workspace_id=workspace_id,
+            ttl_seconds=3600,
+        )
+        resolved = auth.resolve_session(token)
+        assert resolved is not None
+        assert resolved.session_id == issued.session_id
+        assert resolved.role == "viewer"
+
+        with store.connect() as db:
+            row = db.execute(
+                "SELECT token_hash FROM user_sessions WHERE id = %s",
+                (issued.session_id,),
+            ).fetchone()
+        assert row is not None
+        assert row["token_hash"] == auth.hash_token(token)
+        assert token not in row["token_hash"]
+
+        auth.set_membership(workspace_id, 202, "editor")
+        promoted = auth.resolve_session(token)
+        assert promoted is not None and promoted.role == "editor"
+
+        assert auth.revoke_session(token) is True
+        assert auth.resolve_session(token) is None
     finally:
         store.close()
