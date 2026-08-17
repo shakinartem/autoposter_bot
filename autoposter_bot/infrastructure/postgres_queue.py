@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from autoposter_bot.infrastructure.postgres_store import PostgresContentStore
+from autoposter_bot.infrastructure.retry_schema import init_retry_schema
 
 
 class PostgresPublicationQueue:
@@ -10,6 +11,7 @@ class PostgresPublicationQueue:
 
     def __init__(self, store: PostgresContentStore) -> None:
         self.store = store
+        init_retry_schema(backend="postgres", connect=store.connect)
 
     def claim_due(self, now: datetime, *, limit: int = 25) -> list[str]:
         with self.store.connect() as connection:
