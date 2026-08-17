@@ -4,7 +4,7 @@ Autoposter развивается из Telegram-first бота в workspace-scop
 
 ## Фактический scope текущей ветки
 
-Сейчас production registry содержит четыре площадки:
+Production registry сейчас содержит четыре площадки:
 
 - `Telegram`: текст, фото, видео, альбомы;
 - `VK`: текст, фото, видео на стену;
@@ -24,7 +24,7 @@ ContentItem (Master)
 
 Platform variant остаётся синхронизирован с Master, пока пользователь не делает platform-specific override. После override вариант живёт независимо.
 
-## Новая архитектура
+## Архитектура
 
 - FastAPI backend;
 - Next.js Composer / Calendar / Social Connections;
@@ -39,8 +39,10 @@ Platform variant остаётся синхронизирован с Master, по
 - TikTok OAuth;
 - Instagram Login OAuth;
 - refresh credentials перед direct/scheduled publish;
+- Telegram OIDC public login;
 - revocable workspace user sessions;
-- RBAC `viewer / editor / admin / owner`.
+- RBAC `viewer / editor / admin / owner`;
+- live multi-workspace switching.
 
 ## Authentication
 
@@ -76,9 +78,31 @@ AUTOPOSTER_WEB_AUTH_MODE=session
 - `owner` — управление административным доступом;
 - `service` — internal server credential, не пользовательская роль.
 
+### Telegram Web Login
+
+Публичный вход использует Telegram OIDC Authorization Code Flow с PKCE.
+
+Поток:
+
+```text
+/login
+  -> Next.js /auth/telegram
+  -> Telegram OIDC
+  -> FastAPI /auth/telegram/callback
+  -> verified Telegram identity
+  -> existing user or new user + personal workspace
+  -> one-time apg_ login grant
+  -> Next.js /auth/complete
+  -> revocable aps_ session in HttpOnly cookie
+```
+
+Долгоживущий `aps_` token не попадает в URL, React state, browser history или referrer. Callback выдаёт только короткоживущий одноразовый `apg_` grant, в БД хранится только его hash.
+
+Пользователь с доступом к нескольким workspace переключает активный workspace без перевыпуска session token. Logout сначала отзывает backend session, затем удаляет cookie.
+
 ### Operator session CLI
 
-До подключения финального публичного identity provider сессии можно безопасно выдавать оператором существующим workspace members:
+Операторский bridge остаётся для внутренних сценариев:
 
 ```bash
 autoposter-session members --workspace-id 1
@@ -87,13 +111,11 @@ autoposter-session issue --workspace-id 1 --user-id 2 --days 30
 autoposter-session revoke 'aps_...'
 ```
 
-Это временный administrative bridge, а не публичная self-signup модель.
-
 ## Social Connections
 
 Manual encrypted connection configuration поддерживается для Telegram, VK, Instagram и TikTok.
 
-One-click OAuth сейчас подключён для:
+One-click OAuth подключён для:
 
 - TikTok;
 - Instagram Login.
@@ -114,13 +136,11 @@ Scheduled workers используют PostgreSQL row locking для атома�
 
 В PostgreSQL schema уже есть append-only `analytics_snapshots`, привязанные к `Publication`, и индекс по `publication_id + captured_at`.
 
-**Collector/analytics worker пока не реализованы в текущей ветке.** Это следующий data-layer milestone, после которого можно строить dataset:
+**Collector/analytics worker пока не реализованы в текущей ветке.** Следующий data-layer milestone должен дать dataset:
 
 ```text
 Master -> Variant -> Platform -> Published At -> Performance snapshots
 ```
-
-Именно этот слой должен стать основой будущих рекомендаций по формату, площадке и времени публикации.
 
 ## Legacy Telegram admin bot
 
@@ -154,19 +174,12 @@ autoposter-workspace --help
 autoposter-session --help
 ```
 
-Legacy bot:
-
-```powershell
-autoposter init-db
-autoposter admin-bot
-```
-
 ## Near-term roadmap
 
-1. публичный identity-provider login поверх существующего session/RBAC слоя;
+1. invitation/onboarding UX для команд и дополнительных identity providers;
 2. posting-compatible VK connection flow;
 3. structured external post IDs/URLs для всех текущих publishers;
-4. rate-limit-aware retry/backoff policy;
+4. rate-limit-aware retry/backoff + idempotency;
 5. analytics collectors + milestone performance snapshots;
 6. orphan media lifecycle cleanup;
 7. дополнительные native platforms, включая YouTube;
