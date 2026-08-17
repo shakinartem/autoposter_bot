@@ -44,7 +44,7 @@ class PostgresPublicationQueue:
                 UPDATE publications_v2
                 SET status = 'scheduled', next_attempt_at = %s, updated_at = %s
                 WHERE id = %s
-                  AND status IN ('failed', 'queued', 'publishing')
+                  AND status IN ('failed', 'queued')
                   AND published_at IS NULL
                   AND external_post_id IS NULL
                 """,
@@ -58,6 +58,32 @@ class PostgresPublicationQueue:
                 "UPDATE publications_v2 SET next_attempt_at = NULL, updated_at = %s WHERE id = %s",
                 (now, publication_id),
             )
+
+    def quarantine_stale_publishing(
+        self,
+        now: datetime,
+        *,
+        stale_after: timedelta = timedelta(hours=2),
+    ) -> int:
+        """Stop blind retries after a worker may already have sent the remote POST."""
+        cutoff = now - stale_after
+        with self.store.connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE publications_v2
+                SET status = 'failed',
+                    next_attempt_at = NULL,
+                    last_error_code = 'unknown_publish_outcome',
+                    last_error_message = 'Worker stopped after remote publish started; reconcile the platform before retrying',
+                    updated_at = %s
+                WHERE status = 'publishing'
+                  AND updated_at < %s
+                  AND published_at IS NULL
+                  AND external_post_id IS NULL
+                """,
+                (now, cutoff),
+            )
+            return int(cursor.rowcount)
 
     def requeue_stale(self, now: datetime, *, stale_after: timedelta = timedelta(minutes=15)) -> int:
         cutoff = now - stale_after
