@@ -1,7 +1,7 @@
 [project]
 name = "autoposter-bot"
-version = "0.2.0"
-description = "Web/API-first content distribution platform with Telegram, VK, Instagram, and TikTok adapters"
+version = "0.3.0"
+description = "Workspace-scoped web/API content distribution platform with Telegram, VK, Instagram, and TikTok adapters"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -22,6 +22,7 @@ dev = [
 autoposter = "autoposter_bot.cli:main"
 autoposter-api = "autoposter_bot.apps.api.runner:main"
 autoposter-worker = "autoposter_bot.apps.worker.runner:main"
+autoposter-workspace = "autoposter_bot.apps.workspace_cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]
