@@ -66,3 +66,17 @@ class WorkspaceSessionService:
             "role": normalize_role(str(membership["role"])),
             "session_id": session_id,
         }
+
+    def revoke_current(self, *, session_id: str, user_id: int) -> bool:
+        placeholder = "%s" if self.auth_store.backend == "postgres" else "?"
+        now = datetime.now(timezone.utc)
+        now_db: datetime | str = now if self.auth_store.backend == "postgres" else now.isoformat()
+        with self.auth_store.connect() as connection:
+            cursor = connection.execute(
+                f"""
+                UPDATE user_sessions SET revoked_at = {placeholder}
+                WHERE id = {placeholder} AND user_id = {placeholder} AND revoked_at IS NULL
+                """,
+                (now_db, session_id, user_id),
+            )
+        return bool(cursor.rowcount)
