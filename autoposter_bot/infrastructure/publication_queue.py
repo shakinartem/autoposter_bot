@@ -6,12 +6,7 @@ from pathlib import Path
 
 
 class SQLitePublicationQueue:
-    """Atomic queue operations for scheduled Content OS publications.
-
-    SQLite serializes the short claim transaction, so multiple worker processes
-    cannot claim the same publication. PostgreSQL can later replace this with
-    SELECT ... FOR UPDATE SKIP LOCKED without changing worker behavior.
-    """
+    """Atomic queue operations for scheduled Content OS publications."""
 
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
@@ -27,8 +22,8 @@ class SQLitePublicationQueue:
                 FROM publications_v2
                 WHERE status = 'scheduled'
                   AND scheduled_at IS NOT NULL
-                  AND scheduled_at <= ?
-                ORDER BY scheduled_at, created_at
+                  AND COALESCE(next_attempt_at, scheduled_at) <= ?
+                ORDER BY COALESCE(next_attempt_at, scheduled_at), created_at
                 LIMIT ?
                 """,
                 (now.isoformat(), limit),
@@ -53,6 +48,36 @@ class SQLitePublicationQueue:
         finally:
             connection.close()
 
+    def schedule_retry(self, publication_id: str, next_attempt_at: datetime, *, now: datetime) -> bool:
+        connection = sqlite3.connect(self.db_path, timeout=30)
+        try:
+            cursor = connection.execute(
+                """
+                UPDATE publications_v2
+                SET status = 'scheduled', next_attempt_at = ?, updated_at = ?
+                WHERE id = ?
+                  AND status IN ('failed', 'queued', 'publishing')
+                  AND published_at IS NULL
+                  AND external_post_id IS NULL
+                """,
+                (next_attempt_at.isoformat(), now.isoformat(), publication_id),
+            )
+            connection.commit()
+            return bool(cursor.rowcount)
+        finally:
+            connection.close()
+
+    def clear_retry(self, publication_id: str, *, now: datetime) -> None:
+        connection = sqlite3.connect(self.db_path, timeout=30)
+        try:
+            connection.execute(
+                "UPDATE publications_v2 SET next_attempt_at = NULL, updated_at = ? WHERE id = ?",
+                (now.isoformat(), publication_id),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
     def requeue_stale(self, now: datetime, *, stale_after: timedelta = timedelta(minutes=15)) -> int:
         cutoff = (now - stale_after).isoformat()
         connection = sqlite3.connect(self.db_path, timeout=30)
@@ -63,6 +88,8 @@ class SQLitePublicationQueue:
                 SET status = 'scheduled', updated_at = ?
                 WHERE status = 'queued'
                   AND updated_at < ?
+                  AND published_at IS NULL
+                  AND external_post_id IS NULL
                 """,
                 (now.isoformat(), cutoff),
             )
