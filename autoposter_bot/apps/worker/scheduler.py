@@ -28,6 +28,7 @@ class PublicationWorker:
 
     def run_once(self, *, now: datetime | None = None, limit: int = 25) -> dict[str, int]:
         now = now or datetime.now()
+        quarantined = self.queue.quarantine_stale_publishing(now)
         recovered = self.queue.requeue_stale(now)
         publication_ids = self.queue.claim_due(now, limit=limit)
         stats = {
@@ -36,6 +37,7 @@ class PublicationWorker:
             "retried": 0,
             "failed": 0,
             "deduplicated": 0,
+            "quarantined": quarantined,
             "recovered": recovered,
         }
 
@@ -45,8 +47,6 @@ class PublicationWorker:
                 stats["failed"] += 1
                 continue
 
-            # A stale/manual requeue must never republish an item that already has
-            # durable evidence of a successful remote publish.
             if publication.external_post_id or publication.published_at:
                 publication.status = PublicationStatus.PUBLISHED
                 publication.last_error_code = None
@@ -85,6 +85,22 @@ class PublicationWorker:
                 stats["failed"] += 1
                 continue
 
+            try:
+                adapter = self.publishing.registry.get(publication.platform)
+                issues = adapter.validate(variant)
+            except KeyError as exc:
+                self._terminal_failure(publication, code="platform_missing", message=str(exc))
+                stats["failed"] += 1
+                continue
+            if issues:
+                self._terminal_failure(
+                    publication,
+                    code=issues[0].code,
+                    message=issues[0].message,
+                )
+                stats["failed"] += 1
+                continue
+
             if self.credential_refresh is not None:
                 try:
                     refreshed_options, changed = self.credential_refresh.refresh_if_needed(
@@ -99,8 +115,6 @@ class PublicationWorker:
                         if refreshed_account is not None:
                             account = refreshed_account
                 except Exception as exc:
-                    # Publishing has not started yet, so retrying a transient token
-                    # refresh failure cannot create a duplicate remote post.
                     publication.attempt_count += 1
                     publication.status = PublicationStatus.FAILED
                     publication.last_error_code = "credential_refresh_failed"
@@ -115,16 +129,25 @@ class PublicationWorker:
                     self._record_and_schedule(publication, result, now, stats)
                     continue
 
+            # Persist the network boundary before the provider call. After this
+            # point a crash has an ambiguous remote outcome and must not be
+            # automatically treated like a never-started queued job.
+            publication.attempt_count += 1
+            publication.status = PublicationStatus.PUBLISHING
+            publication.last_error_code = None
+            publication.last_error_message = None
+            publication.metadata["publish_started_at"] = now.isoformat()
+            publication.metadata["publish_phase"] = "remote_call_started"
+            self.store.save_publication(publication)
+
             try:
                 result = self.publishing.publish(
                     variant,
                     publication,
                     account_options=account["options"],
+                    attempt_started=True,
                 )
             except Exception as exc:
-                # Unknown outcome: the provider may have accepted the POST before
-                # the response or process was lost. Do not blind-retry and risk a
-                # duplicate. A platform-specific reconciler can safely requeue it.
                 publication.status = PublicationStatus.FAILED
                 publication.last_error_code = "unknown_publish_outcome"
                 publication.last_error_message = str(exc)
@@ -137,6 +160,9 @@ class PublicationWorker:
                     raw_response={"exception_type": type(exc).__name__},
                 )
 
+            publication.metadata["publish_phase"] = (
+                "remote_confirmed" if result.ok else "remote_failed_or_unknown"
+            )
             self._record_and_schedule(publication, result, now, stats)
 
         return stats
