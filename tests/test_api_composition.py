@@ -29,6 +29,9 @@ def test_auth_account_media_and_publish_routes_remain_mounted():
     paths = _paths()
 
     assert "/api/v1/auth/me" in paths
+    assert "/api/v1/auth/session" in paths
+    assert "/api/v1/auth/workspaces" in paths
+    assert "/api/v1/auth/workspaces/{workspace_id}/switch" in paths
     assert "/api/v1/members" in paths
     assert "/api/v1/accounts" in paths
     assert "/api/v1/account-connections" in paths
