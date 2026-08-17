@@ -51,6 +51,7 @@ export type SocialAccount = {
   name: string;
   platform: string;
   destination: string | null;
+  public_options: Record<string, unknown>;
   created_at: string;
 };
 
@@ -97,9 +98,12 @@ export type PublishResult = {
   status: string;
   external_post_id?: string | null;
   external_url?: string | null;
+  published_at?: string | null;
   error_code?: string | null;
   error_message?: string | null;
   retryable: boolean;
+  rate_limit_reset_at?: string | null;
+  raw_response?: Record<string, unknown>;
 };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
