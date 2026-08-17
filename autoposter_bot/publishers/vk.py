@@ -42,9 +42,11 @@ class VkPublisher(Publisher):
             else:
                 return PublishResult(self.platform, owner_id, False, f"Unsupported VK media type: {media_item.media_type}")
 
+        default_from_group = str(owner_id).startswith("-")
         payload = {
             "owner_id": owner_id,
-            "from_group": 1 if str(owner_id).startswith("-") else 0,
+            "from_group": 1 if bool(target.options.get("from_group", default_from_group)) else 0,
+            "signed": 1 if bool(target.options.get("signed", False)) else 0,
             "message": job.text,
             "attachments": ",".join(filter(None, attachments)) or target.options.get("attachment"),
             "access_token": self.token,
