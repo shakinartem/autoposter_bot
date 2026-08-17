@@ -4,16 +4,23 @@ import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from autoposter_bot.infrastructure.retry_schema import init_retry_schema
+
 
 class SQLitePublicationQueue:
     """Atomic queue operations for scheduled Content OS publications."""
 
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
+        init_retry_schema(backend="sqlite", connect=self._connect)
 
-    def claim_due(self, now: datetime, *, limit: int = 25) -> list[str]:
+    def _connect(self):
         connection = sqlite3.connect(self.db_path, timeout=30)
         connection.row_factory = sqlite3.Row
+        return connection
+
+    def claim_due(self, now: datetime, *, limit: int = 25) -> list[str]:
+        connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
             rows = connection.execute(
@@ -49,7 +56,7 @@ class SQLitePublicationQueue:
             connection.close()
 
     def schedule_retry(self, publication_id: str, next_attempt_at: datetime, *, now: datetime) -> bool:
-        connection = sqlite3.connect(self.db_path, timeout=30)
+        connection = self._connect()
         try:
             cursor = connection.execute(
                 """
@@ -68,7 +75,7 @@ class SQLitePublicationQueue:
             connection.close()
 
     def clear_retry(self, publication_id: str, *, now: datetime) -> None:
-        connection = sqlite3.connect(self.db_path, timeout=30)
+        connection = self._connect()
         try:
             connection.execute(
                 "UPDATE publications_v2 SET next_attempt_at = NULL, updated_at = ? WHERE id = ?",
@@ -80,7 +87,7 @@ class SQLitePublicationQueue:
 
     def requeue_stale(self, now: datetime, *, stale_after: timedelta = timedelta(minutes=15)) -> int:
         cutoff = (now - stale_after).isoformat()
-        connection = sqlite3.connect(self.db_path, timeout=30)
+        connection = self._connect()
         try:
             cursor = connection.execute(
                 """
