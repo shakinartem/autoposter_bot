@@ -5,6 +5,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from autoposter_bot.application.sessions import WorkspaceSessionService
 from autoposter_bot.apps.api.authorization import require_minimum_role, role_level
 from autoposter_bot.apps.api.security import AuthContext, get_auth_context
 from autoposter_bot.infrastructure.auth_store import AuthStore, CANONICAL_ROLES
@@ -19,6 +20,12 @@ class MemberRolePayload(BaseModel):
 
 def build_auth_router(auth_store: AuthStore) -> APIRouter:
     router = APIRouter(prefix="/api/v1", tags=["auth"])
+    sessions = WorkspaceSessionService(auth_store)
+
+    def user_session(auth: AuthContext) -> tuple[int, str]:
+        if auth.mode != "session" or auth.user_id is None or not auth.session_id:
+            raise HTTPException(status_code=409, detail="User session authentication required")
+        return auth.user_id, auth.session_id
 
     @router.get("/auth/me")
     def current_identity(auth: CurrentAuth) -> dict[str, Any]:
@@ -30,6 +37,23 @@ def build_auth_router(auth_store: AuthStore) -> APIRouter:
             "session_id": auth.session_id,
             "credential_fingerprint": auth.credential_fingerprint,
         }
+
+    @router.get("/auth/workspaces")
+    def user_workspaces(auth: CurrentAuth) -> list[dict[str, Any]]:
+        user_id, _ = user_session(auth)
+        return sessions.list_workspaces(user_id)
+
+    @router.post("/auth/workspaces/{workspace_id}/switch")
+    def switch_workspace(workspace_id: int, auth: CurrentAuth) -> dict[str, Any]:
+        user_id, session_id = user_session(auth)
+        try:
+            return sessions.switch_workspace(
+                session_id=session_id,
+                user_id=user_id,
+                workspace_id=workspace_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     @router.get("/members")
     def list_members(auth: CurrentAuth) -> list[dict[str, Any]]:
@@ -47,8 +71,6 @@ def build_auth_router(auth_store: AuthStore) -> APIRouter:
         if requested not in CANONICAL_ROLES:
             raise HTTPException(status_code=422, detail=f"Unknown workspace role: {requested}")
 
-        # Admins may manage editors/viewers, but only an owner (or trusted service
-        # caller) may grant/revoke administrative power.
         if requested in {"owner", "admin"} and role_level(auth.role) < role_level("owner"):
             raise HTTPException(status_code=403, detail="Owner role required to grant admin/owner access")
         if requested == "owner":
