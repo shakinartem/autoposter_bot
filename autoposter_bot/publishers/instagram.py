@@ -56,6 +56,7 @@ class InstagramPublisher(Publisher):
         ig_user_id = target.options["ig_user_id"]
         auth = self._build_auth(flow, access_token)
 
+        creation_id: str | None = None
         try:
             creation_id = self._create_container(
                 requests=requests,
@@ -76,9 +77,22 @@ class InstagramPublisher(Publisher):
                 target.destination,
                 True,
                 f"Instagram publish succeeded ({flow}): {publish_id}",
+                external_post_id=str(publish_id),
+                raw_response={
+                    "creation_id": creation_id,
+                    "publish_id": publish_id,
+                    "flow": flow,
+                    "content_type": job.content_type,
+                },
             )
         except Exception as exc:
-            return PublishResult(self.platform, target.destination, False, str(exc))
+            return PublishResult(
+                self.platform,
+                target.destination,
+                False,
+                str(exc),
+                raw_response={"creation_id": creation_id, "flow": flow},
+            )
 
     def _resolve_flow(self, options: dict[str, Any], access_token: str) -> str:
         configured_flow = (options.get("api_flow") or options.get("auth_flow") or "").strip().lower()
