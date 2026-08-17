@@ -60,8 +60,23 @@ class VkPublisher(Publisher):
         if "response" in data:
             post_id = data["response"].get("post_id") if isinstance(data["response"], dict) else None
             detail = f"VK publish succeeded: {post_id}" if post_id else "VK publish succeeded"
-            return PublishResult(self.platform, owner_id, True, detail)
-        return PublishResult(self.platform, owner_id, False, f"VK API error: {data}")
+            remote_id = f"{owner_id}_{post_id}" if post_id is not None else None
+            return PublishResult(
+                self.platform,
+                owner_id,
+                True,
+                detail,
+                external_post_id=remote_id,
+                external_url=f"https://vk.com/wall{remote_id}" if remote_id else None,
+                raw_response=data,
+            )
+        return PublishResult(
+            self.platform,
+            owner_id,
+            False,
+            f"VK API error: {data}",
+            raw_response=data,
+        )
 
     def _upload_photo(self, requests, owner_id: str, media_path: Path, token: str) -> str:
         server_response = requests.post(
