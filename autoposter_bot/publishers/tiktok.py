@@ -55,10 +55,10 @@ class TikTokPublisher(Publisher):
         try:
             creator_info = self._query_creator_info(requests, access_token)
             post_mode = target.options.get("post_mode", "DIRECT_POST")
-            requested_privacy_level = (
+            requested_privacy_level = target.options.get("privacy_level") or (
                 self.settings.tiktok_default_privacy_level
                 if self.settings and self.settings.tiktok_default_privacy_level
-                else target.options.get("privacy_level", "SELF_ONLY")
+                else "SELF_ONLY"
             )
             privacy_level = self._resolve_privacy_level(requested_privacy_level, creator_info)
             disable_comment = self._resolve_interaction_flag(
