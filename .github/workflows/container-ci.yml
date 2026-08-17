@@ -71,3 +71,20 @@ jobs:
             -e AUTOPOSTER_DOMAIN=autoposter.example.com \
             -v "$PWD/deploy/Caddyfile:/etc/caddy/Caddyfile:ro" \
             caddy:2.10-alpine caddy validate --config /etc/caddy/Caddyfile
+
+      - name: Build exact-source archive
+        if: success()
+        run: |
+          short_sha="${GITHUB_SHA::12}"
+          git archive --format=zip --prefix="autoposter-content-os-${short_sha}/" --output="autoposter-content-os-${short_sha}.zip" HEAD
+          echo "ARCHIVE_PATH=autoposter-content-os-${short_sha}.zip" >> "$GITHUB_ENV"
+
+      - name: Upload verified source archive
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: autoposter-source-${{ github.sha }}
+          path: ${{ env.ARCHIVE_PATH }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
