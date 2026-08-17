@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from autoposter_bot.application.publishing import PublishingApplication
 from autoposter_bot.config import Settings
 from autoposter_bot.db import Database
 from autoposter_bot.models import PostJob
+from autoposter_bot.platforms.factory import build_default_platform_registry
 from autoposter_bot.publishers import (
     InstagramPublisher,
     PublishResult,
@@ -15,12 +17,20 @@ from autoposter_bot.publishers import (
 class AutoposterService:
     def __init__(self, settings: Settings) -> None:
         self.db = Database(settings.database_path)
+
+        # Legacy publishing path. Kept during migration so the existing bot and
+        # scheduler continue working without a flag day rewrite.
         self.publishers = {
             "telegram": TelegramPublisher(settings.telegram_bot_token),
             "vk": VkPublisher(settings.vk_token, settings.vk_api_version),
             "instagram": InstagramPublisher(),
             "tiktok": TikTokPublisher(settings),
         }
+
+        # Content OS path. Web/API/bot clients should progressively move to this
+        # application service: Content -> PlatformVariant -> Publication.
+        self.platform_registry = build_default_platform_registry(settings)
+        self.publishing = PublishingApplication(self.platform_registry)
 
     def publish_job(self, job: PostJob, dry_run: bool = False) -> list[PublishResult]:
         results: list[PublishResult] = []
