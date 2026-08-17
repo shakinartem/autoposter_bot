@@ -79,11 +79,7 @@ class CredentialCipher:
 
 
 class SecureContentStore:
-    """Store decorator that removes secrets from account options at rest.
-
-    Domain CRUD is delegated to the wrapped store. Account reads transparently
-    merge encrypted credentials back into options only inside backend/worker memory.
-    """
+    """Store decorator that keeps account secrets encrypted at rest."""
 
     def __init__(self, base: Any, *, backend: str, cipher: CredentialCipher | None) -> None:
         self.base = base
@@ -113,6 +109,110 @@ class SecureContentStore:
     def get_account(self, account_id: int) -> dict[str, Any] | None:
         item = self.base.get_account(account_id)
         return self._hydrate_account(item) if item else None
+
+    def create_account(
+        self,
+        *,
+        name: str,
+        platform: str,
+        destination: str | None,
+        options: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        workspace = self._workspace_context()
+        if workspace is None:
+            raise PermissionError("Workspace context is required to create an account")
+        options = dict(options or {})
+        public, secrets = split_account_options(options)
+        if secrets and self.cipher is None:
+            raise RuntimeError(
+                "AUTOPOSTER_CREDENTIAL_KEYS must be configured before saving social credentials"
+            )
+        now = datetime.now()
+        owner_user_id = int(workspace["owner_user_id"])
+        workspace_id = int(workspace["id"])
+        root = self._root_store()
+
+        with root.connect() as connection:
+            if self.backend == "postgres":
+                row = connection.execute(
+                    """INSERT INTO accounts(owner_user_id, name, platform, destination, options_json, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
+                    (
+                        owner_user_id,
+                        name.strip(),
+                        platform.strip().lower(),
+                        destination,
+                        Jsonb(public),
+                        now,
+                    ),
+                ).fetchone()
+                account_id = int(row["id"])
+                connection.execute(
+                    """INSERT INTO workspace_accounts(workspace_id, account_id, created_at)
+                    VALUES (%s, %s, %s) ON CONFLICT(workspace_id, account_id) DO NOTHING""",
+                    (workspace_id, account_id, now),
+                )
+            else:
+                cursor = connection.execute(
+                    """INSERT INTO accounts(owner_user_id, name, platform, destination, options_json, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?)""",
+                    (
+                        owner_user_id,
+                        name.strip(),
+                        platform.strip().lower(),
+                        destination,
+                        json.dumps(public, ensure_ascii=False),
+                        now.isoformat(),
+                    ),
+                )
+                account_id = int(cursor.lastrowid)
+                connection.execute(
+                    """INSERT INTO workspace_accounts(workspace_id, account_id, created_at)
+                    VALUES (?, ?, ?) ON CONFLICT(workspace_id, account_id) DO NOTHING""",
+                    (workspace_id, account_id, now.isoformat()),
+                )
+
+        encrypted = self.cipher.encrypt(secrets) if secrets and self.cipher else ""
+        self._write_account_storage(account_id, public, encrypted)
+        account = self.get_account(account_id)
+        if account is None:
+            raise RuntimeError("Created social account could not be loaded")
+        return account
+
+    def update_account(
+        self,
+        account_id: int,
+        *,
+        name: str | None = None,
+        destination: str | None = None,
+        options: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        existing = self.get_account(account_id)
+        if existing is None:
+            return None
+        merged_options = dict(existing.get("options") or {})
+        if options is not None:
+            merged_options.update(options)
+        public, secrets = split_account_options(merged_options)
+        if secrets and self.cipher is None:
+            raise RuntimeError(
+                "AUTOPOSTER_CREDENTIAL_KEYS must be configured before saving social credentials"
+            )
+        root = self._root_store()
+        with root.connect() as connection:
+            if self.backend == "postgres":
+                connection.execute(
+                    "UPDATE accounts SET name = %s, destination = %s WHERE id = %s",
+                    (name.strip() if name is not None else existing["name"], destination if destination is not None else existing["destination"], account_id),
+                )
+            else:
+                connection.execute(
+                    "UPDATE accounts SET name = ?, destination = ? WHERE id = ?",
+                    (name.strip() if name is not None else existing["name"], destination if destination is not None else existing["destination"], account_id),
+                )
+        encrypted = self.cipher.encrypt(secrets) if secrets and self.cipher else ""
+        self._write_account_storage(account_id, public, encrypted)
+        return self.get_account(account_id)
 
     def secure_account(self, account_id: int) -> bool:
         if self.cipher is None:
@@ -150,6 +250,12 @@ class SecureContentStore:
             self._write_encrypted(int(row["account_id"]), self.cipher.rotate(token))
             count += 1
         return count
+
+    def _workspace_context(self) -> dict[str, Any] | None:
+        getter = getattr(self.base, "get_workspace", None)
+        if not callable(getter):
+            return None
+        return getter()
 
     def _hydrate_account(self, account: dict[str, Any]) -> dict[str, Any]:
         result = dict(account)
