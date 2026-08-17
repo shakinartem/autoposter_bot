@@ -21,6 +21,7 @@ dev = [
 [project.scripts]
 autoposter = "autoposter_bot.cli:main"
 autoposter-api = "autoposter_bot.apps.api.runner:main"
+autoposter-worker = "autoposter_bot.apps.worker.runner:main"
 
 [build-system]
 requires = ["setuptools>=68"]
