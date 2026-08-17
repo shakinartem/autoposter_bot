@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from datetime import datetime
 from typing import Any
 
 from autoposter_bot.domain.content import MediaAsset, PlatformVariant, Publication
+from autoposter_bot.infrastructure.media_storage import MediaStorage
 from autoposter_bot.models import MediaItem, PostJob, Target
 from autoposter_bot.platforms.base import CapabilitySpec, PlatformAdapter, PublicationResult, ValidationIssue
 from autoposter_bot.publishers.base import Publisher
@@ -18,6 +20,7 @@ class LegacyPublisherAdapter(PlatformAdapter):
         fields: dict[str, dict[str, Any]] | None = None,
         features: dict[str, bool] | None = None,
         limits: dict[str, int] | None = None,
+        media_storage: MediaStorage | None = None,
     ) -> None:
         self.publisher = publisher
         self.platform = publisher.platform
@@ -25,6 +28,7 @@ class LegacyPublisherAdapter(PlatformAdapter):
         self._fields = fields or {}
         self._features = features or {}
         self._limits = limits or {}
+        self.media_storage = media_storage
 
     def capabilities(self) -> CapabilitySpec:
         return CapabilitySpec(
@@ -50,8 +54,15 @@ class LegacyPublisherAdapter(PlatformAdapter):
         issues = self.validate(variant)
         if issues:
             return PublicationResult(ok=False, status="invalid", error_code=issues[0].code, error_message=issues[0].message)
-        legacy_job = self._to_legacy_job(variant, publication, account_options)
-        result = self.publisher.publish(legacy_job, legacy_job.targets[0], dry_run=dry_run)
+
+        context = (
+            self.media_storage.resolve_variant(variant, self.platform)
+            if self.media_storage is not None
+            else nullcontext(variant)
+        )
+        with context as resolved_variant:
+            legacy_job = self._to_legacy_job(resolved_variant, publication, account_options)
+            result = self.publisher.publish(legacy_job, legacy_job.targets[0], dry_run=dry_run)
         return PublicationResult(
             ok=result.ok,
             status="published" if result.ok else "failed",
