@@ -8,6 +8,8 @@ from autoposter_bot.config import Settings
 from autoposter_bot.infrastructure.auth_store import AuthStore
 from autoposter_bot.infrastructure.content_store import SQLiteContentStore
 from autoposter_bot.infrastructure.credentials import CredentialCipher, SecureContentStore
+from autoposter_bot.infrastructure.identity_store import IdentityStore
+from autoposter_bot.infrastructure.login_grant_store import LoginGrantStore
 from autoposter_bot.infrastructure.postgres_queue import PostgresPublicationQueue
 from autoposter_bot.infrastructure.postgres_store import PostgresContentStore
 from autoposter_bot.infrastructure.publication_queue import SQLitePublicationQueue
@@ -21,12 +23,16 @@ class PersistenceRuntime:
     store: SecureContentStore
     queue: Any
     auth: AuthStore
+    identities: IdentityStore
+    login_grants: LoginGrantStore
 
     def init_schema(self) -> None:
         self.store.init_schema()
         if self.backend == "sqlite":
             init_workspace_schema(self.store.base)
         self.auth.init_schema()
+        self.identities.init_schema()
+        self.login_grants.init_schema()
 
     def scoped(self, workspace_id: int) -> SecureContentStore:
         if self.backend == "postgres":
@@ -50,6 +56,28 @@ def _truthy_env(name: str, default: bool = False) -> bool:
     return raw.strip().lower() not in {"0", "false", "no", "off"}
 
 
+def _runtime(
+    *,
+    backend: str,
+    raw_store: Any,
+    secure_store: SecureContentStore,
+    queue: Any,
+) -> PersistenceRuntime:
+    connect = raw_store.connect
+    return PersistenceRuntime(
+        backend=backend,
+        store=secure_store,
+        queue=queue,
+        auth=AuthStore(backend=backend, connect=connect),
+        identities=IdentityStore(backend=backend, connect=connect),
+        login_grants=LoginGrantStore(
+            backend=backend,
+            connect=connect,
+            ttl_seconds=int(os.getenv("AUTOPOSTER_LOGIN_GRANT_TTL_SECONDS", "120")),
+        ),
+    )
+
+
 def build_persistence(settings: Settings) -> PersistenceRuntime:
     database_url = os.getenv("AUTOPOSTER_DATABASE_URL", "").strip()
     if database_url:
@@ -57,20 +85,22 @@ def build_persistence(settings: Settings) -> PersistenceRuntime:
             raise RuntimeError("AUTOPOSTER_DATABASE_URL currently supports PostgreSQL URLs only")
         raw_store = PostgresContentStore(database_url)
         cipher = CredentialCipher.from_env(required=True)
-        return PersistenceRuntime(
+        secure_store = SecureContentStore(raw_store, backend="postgres", cipher=cipher)
+        return _runtime(
             backend="postgres",
-            store=SecureContentStore(raw_store, backend="postgres", cipher=cipher),
+            raw_store=raw_store,
+            secure_store=secure_store,
             queue=PostgresPublicationQueue(raw_store),
-            auth=AuthStore(backend="postgres", connect=raw_store.connect),
         )
 
     raw_store = SQLiteContentStore(settings.database_path)
     cipher = CredentialCipher.from_env(
         required=_truthy_env("AUTOPOSTER_REQUIRE_CREDENTIAL_ENCRYPTION", default=False)
     )
-    return PersistenceRuntime(
+    secure_store = SecureContentStore(raw_store, backend="sqlite", cipher=cipher)
+    return _runtime(
         backend="sqlite",
-        store=SecureContentStore(raw_store, backend="sqlite", cipher=cipher),
+        raw_store=raw_store,
+        secure_store=secure_store,
         queue=SQLitePublicationQueue(settings.database_path),
-        auth=AuthStore(backend="sqlite", connect=raw_store.connect),
     )
