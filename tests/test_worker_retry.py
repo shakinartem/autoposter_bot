@@ -14,6 +14,7 @@ class FakeStore:
         self.variant = variant
         self.account = account
         self.attempts: list[PublicationResult] = []
+        self.saved_states: list[tuple[PublicationStatus, int]] = []
 
     def get_publication(self, publication_id: str):
         return self.publication if publication_id == self.publication.id else None
@@ -30,6 +31,7 @@ class FakeStore:
 
     def save_publication(self, publication: Publication):
         self.publication = publication
+        self.saved_states.append((publication.status, publication.attempt_count))
         return publication
 
     def record_attempt(self, publication: Publication, result: PublicationResult):
@@ -41,6 +43,9 @@ class FakeQueue:
         self.publication_id = publication_id
         self.retry_at: datetime | None = None
         self.cleared = 0
+
+    def quarantine_stale_publishing(self, now: datetime):
+        return 0
 
     def requeue_stale(self, now: datetime):
         return 0
@@ -57,16 +62,29 @@ class FakeQueue:
         self.retry_at = None
 
 
+class FakeAdapter:
+    def validate(self, variant):
+        return []
+
+
+class FakeRegistry:
+    def get(self, platform):
+        return FakeAdapter()
+
+
 class FakePublishing:
     def __init__(self, result: PublicationResult | None = None, error: Exception | None = None):
         self.result = result
         self.error = error
         self.calls = 0
+        self.registry = FakeRegistry()
+        self.attempt_started_values: list[bool] = []
+        self.pre_call_states: list[tuple[PublicationStatus, int]] = []
 
-    def publish(self, variant, publication, *, account_options):
+    def publish(self, variant, publication, *, account_options, attempt_started=False):
         self.calls += 1
-        publication.attempt_count += 1
-        publication.status = PublicationStatus.PUBLISHING
+        self.attempt_started_values.append(attempt_started)
+        self.pre_call_states.append((publication.status, publication.attempt_count))
         if self.error is not None:
             raise self.error
         assert self.result is not None
@@ -127,6 +145,10 @@ def test_transient_failure_schedules_retry_and_preserves_original_schedule():
     assert stats["failed"] == 0
     assert queue.retry_at == now + timedelta(seconds=60)
     assert store.publication.scheduled_at == original_schedule
+    assert store.publication.attempt_count == 1
+    assert publishing.pre_call_states == [(PublicationStatus.PUBLISHING, 1)]
+    assert publishing.attempt_started_values == [True]
+    assert (PublicationStatus.PUBLISHING, 1) in store.saved_states
     assert store.publication.metadata["last_retry_decision"]["reason"] == "transient"
 
 
@@ -143,6 +165,8 @@ def test_unknown_publish_exception_is_terminal_to_avoid_duplicate():
     assert stats["retried"] == 0
     assert queue.retry_at is None
     assert store.publication.last_error_code == "unknown_publish_outcome"
+    assert store.publication.attempt_count == 1
+    assert publishing.pre_call_states == [(PublicationStatus.PUBLISHING, 1)]
     assert store.attempts[0].retryable is False
 
 
@@ -164,7 +188,7 @@ def test_durable_remote_id_prevents_republish_after_stale_requeue():
     assert queue.cleared == 1
 
 
-def test_non_retryable_validation_failure_stays_failed():
+def test_non_retryable_failure_stays_failed():
     publication, variant, account = fixture()
     store = FakeStore(publication, variant, account)
     queue = FakeQueue(publication.id)
