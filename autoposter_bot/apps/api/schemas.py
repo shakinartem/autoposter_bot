@@ -129,6 +129,7 @@ class AccountView(BaseModel):
     name: str
     platform: str
     destination: str | None
+    public_options: dict[str, Any] = Field(default_factory=dict)
     created_at: str
 
 
