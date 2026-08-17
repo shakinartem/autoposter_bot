@@ -4,6 +4,7 @@ from typing import Annotated, Any, Callable
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from autoposter_bot.apps.api.authorization import require_minimum_role
 from autoposter_bot.apps.api.schemas import AccountCreate, AccountUpdate, AccountView
 from autoposter_bot.apps.api.security import AuthContext, get_auth_context
 from autoposter_bot.platforms.account_specs import get_account_connection_specs
@@ -35,6 +36,7 @@ def build_accounts_router(
 
     @router.post("/accounts", response_model=AccountView, status_code=201)
     def create_account(payload: AccountCreate, auth: CurrentAuth) -> AccountView:
+        require_minimum_role(auth.role, "admin")
         platform = payload.platform.strip().lower()
         specs = get_account_connection_specs(platforms)
         spec = specs.get(platform)
@@ -59,6 +61,7 @@ def build_accounts_router(
 
     @router.patch("/accounts/{account_id}", response_model=AccountView)
     def update_account(account_id: int, payload: AccountUpdate, auth: CurrentAuth) -> AccountView:
+        require_minimum_role(auth.role, "admin")
         store = scoped(auth.workspace_id)
         existing = store.get_account(account_id)
         if existing is None:
@@ -118,11 +121,18 @@ def _validate_connection_payload(
 
 
 def _account_view(item: dict[str, Any]) -> AccountView:
+    public_options = {
+        key: value
+        for key, value in dict(item.get("options") or {}).items()
+        if key not in {"token", "access_token", "refresh_token", "bot_token", "api_key", "api_secret", "client_secret", "password", "secret"}
+        and not key.endswith(("_token", "_secret", "_password", "_api_key", "_api_secret"))
+    }
     return AccountView(
         id=int(item["id"]),
         owner_user_id=item.get("owner_user_id"),
         name=item["name"],
         platform=item["platform"],
         destination=item.get("destination"),
+        public_options=public_options,
         created_at=item["created_at"],
     )
