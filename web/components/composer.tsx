@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   type ContentItem,
+  type MediaAsset,
   type PlatformCapability,
   type PlatformVariant,
   type SocialAccount,
@@ -19,6 +20,7 @@ import {
   updateContent,
   upsertVariant,
 } from "@/lib/api";
+import { MasterMedia } from "@/components/master-media";
 import { PlatformFields, capabilityDefaults } from "@/components/platform-fields";
 
 const PLATFORM_LABELS: Record<string, string> = {
@@ -40,6 +42,7 @@ export function Composer() {
   const [activePlatform, setActivePlatform] = useState("telegram");
   const [masterTitle, setMasterTitle] = useState("");
   const [masterBody, setMasterBody] = useState("");
+  const [masterMedia, setMasterMedia] = useState<MediaAsset[]>([]);
   const [variantTitle, setVariantTitle] = useState("");
   const [variantText, setVariantText] = useState("");
   const [variantFields, setVariantFields] = useState<Record<string, unknown>>({});
@@ -58,6 +61,7 @@ export function Composer() {
     setActiveContent(item);
     setMasterTitle(item.title);
     setMasterBody(item.body);
+    setMasterMedia(item.media);
     await loadVariants(item);
   }, [loadVariants]);
 
@@ -117,13 +121,14 @@ export function Composer() {
     try {
       let saved: ContentItem;
       if (activeContent) {
-        saved = await updateContent(activeContent.id, { title: masterTitle, body: masterBody });
+        saved = await updateContent(activeContent.id, { title: masterTitle, body: masterBody, media: masterMedia });
         setContent((items) => items.map((item) => (item.id === saved.id ? saved : item)));
       } else {
-        saved = await createContent({ title: masterTitle, body: masterBody });
+        saved = await createContent({ title: masterTitle, body: masterBody, media: masterMedia });
         setContent((items) => [saved, ...items]);
       }
       setActiveContent(saved);
+      setMasterMedia(saved.media);
       await loadVariants(saved);
       setNotice("Master content сохранён");
     } catch (error) {
@@ -131,6 +136,15 @@ export function Composer() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function handleMasterMediaChanged(media: MediaAsset[]) {
+    setMasterMedia(media);
+    if (!activeContent) return;
+    const updated = { ...activeContent, media };
+    setActiveContent(updated);
+    setContent((items) => items.map((item) => (item.id === updated.id ? updated : item)));
+    await loadVariants(updated);
   }
 
   async function savePlatformVariant() {
@@ -226,6 +240,7 @@ export function Composer() {
     setVariants({});
     setMasterTitle("");
     setMasterBody("");
+    setMasterMedia([]);
     setVariantTitle("");
     setVariantText("");
     setVariantFields(capabilityDefaults(capability));
@@ -278,7 +293,13 @@ export function Composer() {
               </div>
               <input className="titleInput" value={masterTitle} onChange={(event) => setMasterTitle(event.target.value)} placeholder="Название материала" />
               <textarea className="masterTextarea" value={masterBody} onChange={(event) => setMasterBody(event.target.value)} placeholder="Исходный материал для адаптации под площадки…" />
-              <div className="masterFooter"><span>{masterBody.length} символов</span><span>Master source</span></div>
+              <MasterMedia
+                contentId={activeContent?.id ?? null}
+                initialMedia={masterMedia}
+                onChanged={(media) => void handleMasterMediaChanged(media)}
+                onNotice={setNotice}
+              />
+              <div className="masterFooter"><span>{masterBody.length} символов</span><span>{masterMedia.length} media</span></div>
             </div>
 
             <div className="platformSection">
