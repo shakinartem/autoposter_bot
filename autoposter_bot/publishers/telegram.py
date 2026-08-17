@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-import time
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -44,7 +44,7 @@ class TelegramPublisher(Publisher):
         options = self._message_options(target.options)
         try:
             if not media_items:
-                response = self._post_with_retries(
+                response = self.http.post(
                     f"{base_url}/sendMessage",
                     data={"chat_id": chat_id, "text": job.text, **options},
                     timeout=(20, 180),
@@ -55,7 +55,17 @@ class TelegramPublisher(Publisher):
                 return self._publish_single_media(base_url, chat_id, media_items[0], job.text, options)
             return self._publish_media_group(base_url, chat_id, media_items, job.text, options)
         except requests.exceptions.RequestException as exc:
-            return PublishResult(self.platform, chat_id, False, f"Telegram network error: {exc}")
+            # A network exception after POST has an ambiguous outcome. The
+            # centralized worker must reconcile it instead of blindly retrying.
+            return PublishResult(
+                self.platform,
+                chat_id,
+                False,
+                f"Telegram network error: {exc}",
+                error_code="unknown_publish_outcome",
+                retryable=False,
+                raw_response={"exception_type": type(exc).__name__},
+            )
 
     def _publish_single_media(
         self,
@@ -76,7 +86,7 @@ class TelegramPublisher(Publisher):
             return PublishResult(self.platform, chat_id, False, f"Unsupported Telegram media type: {media_type}")
 
         with Path(media_item.source).open("rb") as media_stream:
-            response = self._post_with_retries(
+            response = self.http.post(
                 f"{base_url}/{method}",
                 data={"chat_id": chat_id, "caption": caption, **options},
                 files={field_name: media_stream},
@@ -116,7 +126,7 @@ class TelegramPublisher(Publisher):
                 for key, value in options.items()
                 if key in {"disable_notification", "protect_content"}
             }
-            response = self._post_with_retries(
+            response = self.http.post(
                 f"{base_url}/sendMediaGroup",
                 data={
                     "chat_id": chat_id,
@@ -143,18 +153,6 @@ class TelegramPublisher(Publisher):
             options["protect_content"] = bool(raw["protect_content"])
         return options
 
-    def _post_with_retries(self, url: str, **kwargs):
-        last_error = None
-        for attempt in range(1, 4):
-            try:
-                return self.http.post(url, **kwargs)
-            except Exception as exc:
-                last_error = exc
-                if attempt == 3:
-                    break
-                time.sleep(attempt)
-        raise last_error
-
     def _normalize_media_types(self, media_items: list[MediaItem]) -> list[MediaItem]:
         normalized: list[MediaItem] = []
         for item in media_items:
@@ -174,11 +172,54 @@ class TelegramPublisher(Publisher):
         return normalized
 
     def _build_result(self, destination: str, response) -> PublishResult:
-        if response.ok:
-            return PublishResult(self.platform, destination, True, "Telegram publish succeeded")
+        try:
+            payload = response.json()
+        except Exception:
+            payload = {"raw_text": response.text}
+
+        if response.ok and isinstance(payload, dict) and payload.get("ok", True):
+            result = payload.get("result")
+            messages = result if isinstance(result, list) else [result]
+            message_ids = [
+                str(item["message_id"])
+                for item in messages
+                if isinstance(item, dict) and item.get("message_id") is not None
+            ]
+            remote_id = message_ids[0] if message_ids else None
+            external_url = None
+            if remote_id and destination.startswith("@"):
+                external_url = f"https://t.me/{destination.lstrip('@')}/{remote_id}"
+            return PublishResult(
+                self.platform,
+                destination,
+                True,
+                "Telegram publish succeeded",
+                external_post_id=remote_id,
+                external_url=external_url,
+                raw_response={"telegram": payload, "message_ids": message_ids},
+            )
+
+        retry_after = None
+        if isinstance(payload, dict):
+            parameters = payload.get("parameters") or {}
+            if isinstance(parameters, dict):
+                raw_retry = parameters.get("retry_after")
+                try:
+                    retry_after = int(raw_retry) if raw_retry is not None else None
+                except (TypeError, ValueError):
+                    retry_after = None
+        rate_limit_reset_at = (
+            datetime.now() + timedelta(seconds=retry_after) if retry_after is not None else None
+        )
+        retryable = response.status_code == 429 or 500 <= response.status_code < 600
+        error_code = "rate_limited" if response.status_code == 429 else f"telegram_http_{response.status_code}"
         return PublishResult(
             self.platform,
             destination,
             False,
             f"Telegram API error {response.status_code}: {response.text}",
+            raw_response={"telegram": payload},
+            error_code=error_code,
+            retryable=retryable,
+            rate_limit_reset_at=rate_limit_reset_at,
         )
