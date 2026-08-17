@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from autoposter_bot.application.content import ContentApplication
 from autoposter_bot.application.publishing import PublishingApplication
+from autoposter_bot.apps.api.media import build_media_router
 from autoposter_bot.apps.api.schemas import (
     AccountView,
     ContentCreate,
@@ -28,12 +29,14 @@ from autoposter_bot.apps.api.schemas import (
 from autoposter_bot.apps.api.security import AuthContext, get_auth_context
 from autoposter_bot.config import load_settings
 from autoposter_bot.domain.content import MediaAsset, Publication, PublicationStatus
+from autoposter_bot.infrastructure.media_storage import build_media_storage
 from autoposter_bot.infrastructure.persistence import build_persistence
 from autoposter_bot.platforms.factory import build_default_platform_registry
 
 
 settings = load_settings()
 persistence = build_persistence(settings)
+media_storage = build_media_storage(settings)
 registry = build_default_platform_registry(settings)
 publishing_application = PublishingApplication(registry)
 CurrentAuth = Annotated[AuthContext, Depends(get_auth_context)]
@@ -49,16 +52,13 @@ async def lifespan(_: FastAPI):
 
 
 def _cors_origins() -> list[str]:
-    raw = os.getenv(
-        "AUTOPOSTER_CORS_ORIGINS",
-        "http://localhost:3000,http://127.0.0.1:3000",
-    )
+    raw = os.getenv("AUTOPOSTER_CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
     return [item.strip().rstrip("/") for item in raw.split(",") if item.strip()]
 
 
 app = FastAPI(
     title="Autoposter Content OS API",
-    version="0.4.0",
+    version="0.6.0",
     description=f"Workspace-scoped web/API backend for Autoposter ({persistence.backend}).",
     lifespan=lifespan,
 )
@@ -69,6 +69,7 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
+app.include_router(build_media_router(media_storage))
 
 
 @app.get("/health", response_model=HealthView)
@@ -79,10 +80,7 @@ def health() -> HealthView:
 def _store(auth: AuthContext) -> Any:
     scoped = persistence.scoped(auth.workspace_id)
     if scoped.get_workspace() is None:
-        raise HTTPException(
-            status_code=403,
-            detail=f"Workspace {auth.workspace_id} is not initialized",
-        )
+        raise HTTPException(status_code=403, detail=f"Workspace {auth.workspace_id} is not initialized")
     return scoped
 
 
@@ -104,17 +102,7 @@ def list_accounts(auth: CurrentAuth, platform: str | None = Query(default=None))
     accounts = _store(auth).list_accounts()
     if platform:
         accounts = [item for item in accounts if item["platform"].lower() == platform.lower()]
-    return [
-        AccountView(
-            id=item["id"],
-            owner_user_id=item["owner_user_id"],
-            name=item["name"],
-            platform=item["platform"],
-            destination=item["destination"],
-            created_at=item["created_at"],
-        )
-        for item in accounts
-    ]
+    return [AccountView(id=item["id"], owner_user_id=item["owner_user_id"], name=item["name"], platform=item["platform"], destination=item["destination"], created_at=item["created_at"]) for item in accounts]
 
 
 @app.post("/api/v1/content", response_model=ContentView, status_code=201)
@@ -134,11 +122,7 @@ def create_content(payload: ContentCreate, auth: CurrentAuth) -> ContentView:
 
 
 @app.get("/api/v1/content", response_model=list[ContentView])
-def list_content(
-    auth: CurrentAuth,
-    limit: int = Query(default=100, ge=1, le=500),
-    offset: int = Query(default=0, ge=0),
-) -> list[ContentView]:
+def list_content(auth: CurrentAuth, limit: int = Query(default=100, ge=1, le=500), offset: int = Query(default=0, ge=0)) -> list[ContentView]:
     return [_content_view(item) for item in _store(auth).list_content(limit=limit, offset=offset)]
 
 
@@ -164,7 +148,6 @@ def update_content(content_id: str, payload: ContentUpdate, auth: CurrentAuth) -
             changes[key] = []
     if "metadata" in changes and changes["metadata"] is None:
         changes["metadata"] = {}
-
     item = ContentApplication(scoped).update(content_id, **changes)
     if item is None:
         raise HTTPException(status_code=404, detail="Content item not found")
@@ -186,7 +169,6 @@ def upsert_variant(content_id: str, platform: str, payload: VariantUpsert, auth:
         registry.get(platform)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-
     changes = payload.model_dump(exclude_unset=True)
     if "media" in changes:
         changes["media"] = [_media_from_payload(MediaPayload.model_validate(media)) for media in changes["media"] or []]
@@ -198,7 +180,6 @@ def upsert_variant(content_id: str, platform: str, payload: VariantUpsert, auth:
         changes["fields"] = {}
     if "metadata" in changes and changes["metadata"] is None:
         changes["metadata"] = {}
-
     variant = ContentApplication(scoped).upsert_variant(content_id, platform, **changes)
     if variant is None:
         raise HTTPException(status_code=404, detail="Content item not found")
@@ -223,29 +204,21 @@ def create_publication(variant_id: str, payload: PublicationCreate, auth: Curren
     if account is None:
         raise HTTPException(status_code=404, detail="Social account not found")
     if account["platform"].lower() != variant.platform.lower():
-        raise HTTPException(
-            status_code=409,
-            detail=f"Account platform {account['platform']} does not match variant platform {variant.platform}",
-        )
-
+        raise HTTPException(status_code=409, detail=f"Account platform {account['platform']} does not match variant platform {variant.platform}")
     publication = Publication(
         variant_id=variant.id,
         platform=variant.platform,
         account_id=payload.account_id,
         destination=payload.destination or account["destination"],
         scheduled_at=payload.scheduled_at,
-        status=(PublicationStatus.SCHEDULED if payload.scheduled_at else PublicationStatus.DRAFT),
+        status=PublicationStatus.SCHEDULED if payload.scheduled_at else PublicationStatus.DRAFT,
     )
     scoped.save_publication(publication)
     return _publication_view(publication)
 
 
 @app.get("/api/v1/publications", response_model=list[PublicationView])
-def list_publications(
-    auth: CurrentAuth,
-    status: str | None = Query(default=None),
-    limit: int = Query(default=100, ge=1, le=500),
-) -> list[PublicationView]:
+def list_publications(auth: CurrentAuth, status: str | None = Query(default=None), limit: int = Query(default=100, ge=1, le=500)) -> list[PublicationView]:
     parsed_status = None
     if status:
         try:
@@ -275,17 +248,10 @@ def publish(publication_id: str, payload: PublishRequest, auth: CurrentAuth) -> 
     account = scoped.get_account(publication.account_id)
     if account is None:
         raise HTTPException(status_code=409, detail="Publication social account no longer exists")
-
     try:
-        result = publishing_application.publish(
-            variant,
-            publication,
-            account_options=account["options"],
-            dry_run=payload.dry_run,
-        )
+        result = publishing_application.publish(variant, publication, account_options=account["options"], dry_run=payload.dry_run)
     except KeyError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-
     if not payload.dry_run:
         scoped.save_publication(publication)
         scoped.record_attempt(publication, result)
@@ -293,72 +259,23 @@ def publish(publication_id: str, payload: PublishRequest, auth: CurrentAuth) -> 
 
 
 def _media_from_payload(payload: MediaPayload) -> MediaAsset:
-    kwargs = {
-        "source": payload.source,
-        "media_type": payload.media_type,
-        "alt_text": payload.alt_text,
-        "metadata": payload.metadata,
-    }
+    kwargs = {"source": payload.source, "media_type": payload.media_type, "alt_text": payload.alt_text, "metadata": payload.metadata}
     if payload.id:
         kwargs["id"] = payload.id
     return MediaAsset(**kwargs)
 
 
 def _media_view(media: MediaAsset) -> MediaPayload:
-    return MediaPayload(
-        id=media.id,
-        source=media.source,
-        media_type=media.media_type,
-        alt_text=media.alt_text,
-        metadata=media.metadata,
-    )
+    return MediaPayload(id=media.id, source=media.source, media_type=media.media_type, alt_text=media.alt_text, metadata=media.metadata)
 
 
 def _content_view(item) -> ContentView:
-    return ContentView(
-        id=item.id,
-        title=item.title,
-        body=item.body,
-        cta=item.cta,
-        links=item.links,
-        hashtags=item.hashtags,
-        media=[_media_view(media) for media in item.media],
-        status=item.status.value,
-        metadata=item.metadata,
-        created_at=item.created_at,
-        updated_at=item.updated_at,
-    )
+    return ContentView(id=item.id, title=item.title, body=item.body, cta=item.cta, links=item.links, hashtags=item.hashtags, media=[_media_view(media) for media in item.media], status=item.status.value, metadata=item.metadata, created_at=item.created_at, updated_at=item.updated_at)
 
 
 def _variant_view(variant) -> VariantView:
-    return VariantView(
-        id=variant.id,
-        content_id=variant.content_id,
-        platform=variant.platform,
-        title=variant.title,
-        text=variant.text,
-        media=[_media_view(media) for media in variant.media],
-        fields=variant.fields,
-        sync_with_master=variant.sync_with_master,
-        revision=variant.revision,
-        metadata=variant.metadata,
-    )
+    return VariantView(id=variant.id, content_id=variant.content_id, platform=variant.platform, title=variant.title, text=variant.text, media=[_media_view(media) for media in variant.media], fields=variant.fields, sync_with_master=variant.sync_with_master, revision=variant.revision, metadata=variant.metadata)
 
 
 def _publication_view(publication: Publication) -> PublicationView:
-    return PublicationView(
-        id=publication.id,
-        variant_id=publication.variant_id,
-        platform=publication.platform,
-        account_id=publication.account_id,
-        destination=publication.destination,
-        scheduled_at=publication.scheduled_at,
-        status=publication.status.value,
-        external_post_id=publication.external_post_id,
-        external_url=publication.external_url,
-        published_at=publication.published_at,
-        attempt_count=publication.attempt_count,
-        last_error_code=publication.last_error_code,
-        last_error_message=publication.last_error_message,
-        metadata=publication.metadata,
-    )
+    return PublicationView(id=publication.id, variant_id=publication.variant_id, platform=publication.platform, account_id=publication.account_id, destination=publication.destination, scheduled_at=publication.scheduled_at, status=publication.status.value, external_post_id=publication.external_post_id, external_url=publication.external_url, published_at=publication.published_at, attempt_count=publication.attempt_count, last_error_code=publication.last_error_code, last_error_message=publication.last_error_message, metadata=publication.metadata)
