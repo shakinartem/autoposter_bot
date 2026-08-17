@@ -44,9 +44,10 @@ class PublishingApplication:
         adapter = self.registry.get(publication.platform)
         issues = adapter.validate(variant)
         if issues:
-            publication.status = PublicationStatus.FAILED
-            publication.last_error_code = issues[0].code
-            publication.last_error_message = issues[0].message
+            if not dry_run:
+                publication.status = PublicationStatus.FAILED
+                publication.last_error_code = issues[0].code
+                publication.last_error_message = issues[0].message
             return PublicationResult(
                 ok=False,
                 status="invalid",
@@ -54,8 +55,8 @@ class PublishingApplication:
                 error_message=issues[0].message,
             )
 
-        publication.attempt_count += 1
         if not dry_run:
+            publication.attempt_count += 1
             publication.status = PublicationStatus.PUBLISHING
 
         result = adapter.publish(
