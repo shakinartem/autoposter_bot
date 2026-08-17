@@ -8,6 +8,7 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
 
+from autoposter_bot.apps.api.authorization import require_minimum_role
 from autoposter_bot.apps.api.security import AuthContext, get_auth_context
 from autoposter_bot.integrations.oauth import OAuthIdentity, OAuthProvider, OAuthStateCodec, OAuthTokens
 
@@ -22,9 +23,11 @@ def build_oauth_router(
 ) -> APIRouter:
     """Workspace-bound OAuth connection endpoints.
 
-    Providers share one encrypted state contract and one account persistence path.
-    This keeps platform OAuth differences in provider classes rather than duplicating
-    security and tenant-isolation logic for every social network.
+    Starting a connection is an administrative action because a successful
+    callback creates or mutates encrypted publishing credentials. The callback
+    itself cannot require the browser session bearer because third-party OAuth
+    providers redirect to it directly; encrypted short-lived state binds it to
+    the initiating workspace and platform.
     """
 
     router = APIRouter(prefix="/api/v1/oauth", tags=["oauth"])
@@ -52,6 +55,7 @@ def build_oauth_router(
         auth: CurrentAuth,
         return_path: str = Query(default="/accounts"),
     ) -> dict[str, str]:
+        require_minimum_role(auth.role, "admin")
         key = platform.strip().lower()
         provider = normalized.get(key)
         if provider is None:
