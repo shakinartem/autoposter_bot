@@ -101,8 +101,10 @@ CREATE TABLE IF NOT EXISTS publications_v2 (
     FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE
 );
 
+-- Existing databases may not have next_attempt_at until the runtime compatibility
+-- migration runs, so keep this base index valid for both old and new schemas.
 CREATE INDEX IF NOT EXISTS idx_publications_v2_due
-    ON publications_v2(status, next_attempt_at, scheduled_at);
+    ON publications_v2(status, scheduled_at);
 CREATE INDEX IF NOT EXISTS idx_publications_v2_account
     ON publications_v2(account_id, status);
 
