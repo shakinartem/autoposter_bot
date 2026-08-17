@@ -10,10 +10,10 @@ def init_retry_schema(
 ) -> None:
     """Install retry scheduling storage without rewriting old migrations.
 
-    SQLite cannot add a column with IF NOT EXISTS, so we inspect table metadata.
-    PostgreSQL can apply the migration idempotently on every process start.
-    If the Content OS tables have not been created yet, this helper is a no-op;
-    the normal persistence schema bootstrap will call it again afterwards.
+    Content OS currently stores publication scheduling timestamps without a
+    timezone. `next_attempt_at` intentionally follows that same contract so the
+    queue never compares timezone-aware and timezone-naive values. Existing
+    early retry columns created as TIMESTAMPTZ are normalized to UTC first.
     """
 
     if backend not in {"sqlite", "postgres"}:
@@ -26,9 +26,28 @@ def init_retry_schema(
             ).fetchone()
             if not exists or exists["table_name"] is None:
                 return
+
             connection.execute(
-                "ALTER TABLE publications_v2 ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ"
+                "ALTER TABLE publications_v2 ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMP"
             )
+            column = connection.execute(
+                """
+                SELECT data_type
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'publications_v2'
+                  AND column_name = 'next_attempt_at'
+                """
+            ).fetchone()
+            if column and column["data_type"] == "timestamp with time zone":
+                connection.execute(
+                    """
+                    ALTER TABLE publications_v2
+                    ALTER COLUMN next_attempt_at TYPE TIMESTAMP
+                    USING next_attempt_at AT TIME ZONE 'UTC'
+                    """
+                )
+
             connection.execute("DROP INDEX IF EXISTS idx_publications_v2_due")
             connection.execute(
                 """
