@@ -48,7 +48,21 @@ jobs:
         run: |
           python -c "from autoposter_bot.apps.api.integrated_main import app; paths=app.openapi()['paths']; assert '/api/v1/integrations/content-factory/packages' in paths; assert '/api/v1/integrations/content-factory/publications/{publication_id}/performance' in paths; print(app.version)"
       - name: Run tests
-        run: pytest -q
+        shell: bash
+        run: |
+          set -o pipefail
+          pytest -q 2>&1 | tee /tmp/pytest.log || {
+            echo "::group::pytest failure tail"
+            tail -n 140 /tmp/pytest.log
+            echo "::endgroup::"
+            while IFS= read -r line; do
+              safe=${line//'%'/'%25'}
+              safe=${safe//$'\r'/'%0D'}
+              safe=${safe//$'\n'/'%0A'}
+              echo "::error title=pytest::$safe"
+            done < <(tail -n 80 /tmp/pytest.log)
+            exit 1
+          }
 
   web:
     runs-on: ubuntu-latest
