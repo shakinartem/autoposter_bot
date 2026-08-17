@@ -39,28 +39,34 @@ jobs:
           pip install -e ".[dev]"
       - name: Compile Python package
         run: python -m compileall autoposter_bot
-      - name: Show discovered crypto/workspace test sources
-        shell: bash
-        run: |
-          echo "HEAD=$(git rev-parse HEAD)"
-          find . -type f \( -name 'test_crypto_and_media.py' -o -name '*workspace*.py' -o -name '*crypto*.py' \) -print | sort
-          grep -R "test_workspace_account_creation_encrypts_secret_options\|def init_workspace_schema" -n . --exclude-dir=.git || true
       - name: Run tests
         shell: bash
         run: |
-          set -o pipefail
-          pytest -vv -x --tb=long 2>&1 | tee /tmp/pytest.log || {
-            echo "::group::pytest full failure tail"
-            tail -n 260 /tmp/pytest.log
-            echo "::endgroup::"
-            while IFS= read -r line; do
-              safe=${line//'%'/'%25'}
-              safe=${safe//$'\r'/'%0D'}
-              safe=${safe//$'\n'/'%0A'}
-              echo "::error title=pytest::$safe"
-            done < <(tail -n 180 /tmp/pytest.log)
-            exit 1
-          }
+          set +e
+          pytest -vv -x --tb=long > /tmp/pytest.log 2>&1
+          status=$?
+          cat /tmp/pytest.log
+          if [ $status -ne 0 ]; then
+            python - <<'PY'
+          from pathlib import Path
+          text = Path('/tmp/pytest.log').read_text(errors='replace')
+          markers = [text.rfind('\n=================================== FAILURES ==================================='), text.rfind('\n==================================== ERRORS ====================================')]
+          start = max(markers)
+          if start < 0:
+              start = max(0, len(text) - 12000)
+          failure = text[start:]
+          lines = failure.splitlines()[-120:]
+          chunks = []
+          for i in range(0, len(lines), 12):
+              chunk = '\n'.join(lines[i:i+12])
+              if chunk.strip():
+                  chunks.append(chunk)
+          for chunk in chunks[-10:]:
+              safe = chunk.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+              print(f'::error title=pytest failure::{safe}')
+          PY
+            exit $status
+          fi
 
   web:
     runs-on: ubuntu-latest
