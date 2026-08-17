@@ -22,7 +22,6 @@ class ContentCreate(BaseModel):
     hashtags: list[str] = Field(default_factory=list)
     media: list[MediaPayload] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
-    workspace_id: int | None = None
 
 
 class ContentUpdate(BaseModel):
@@ -117,6 +116,13 @@ class AccountView(BaseModel):
     name: str
     platform: str
     destination: str | None
+    created_at: str
+
+
+class WorkspaceView(BaseModel):
+    id: int
+    name: str
+    owner_user_id: int
     created_at: str
 
 
