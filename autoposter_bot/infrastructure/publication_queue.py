@@ -12,9 +12,13 @@ class SQLitePublicationQueue:
 
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
+        # A clean checkout has no runtime data directory yet. Queue bootstrap
+        # must be safe before the wider persistence schema is initialized.
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
         init_retry_schema(backend="sqlite", connect=self._connect)
 
     def _connect(self):
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(self.db_path, timeout=30)
         connection.row_factory = sqlite3.Row
         return connection
