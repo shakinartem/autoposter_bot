@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from autoposter_bot.config import Settings
+from autoposter_bot.infrastructure.media_storage import build_media_storage
 from autoposter_bot.platforms.legacy import LegacyPublisherAdapter
 from autoposter_bot.platforms.registry import PlatformRegistry
 from autoposter_bot.publishers import InstagramPublisher, TelegramPublisher, TikTokPublisher, VkPublisher
@@ -8,6 +9,7 @@ from autoposter_bot.publishers import InstagramPublisher, TelegramPublisher, Tik
 
 def build_default_platform_registry(settings: Settings) -> PlatformRegistry:
     registry = PlatformRegistry()
+    media_storage = build_media_storage(settings)
     registry.register(
         LegacyPublisherAdapter(
             TelegramPublisher(settings.telegram_bot_token),
@@ -27,6 +29,7 @@ def build_default_platform_registry(settings: Settings) -> PlatformRegistry:
             },
             features={"formatting": True, "albums": True, "scheduled_publish": True},
             limits={"caption_chars": 1024, "text_chars": 4096},
+            media_storage=media_storage,
         )
     )
     registry.register(
@@ -38,6 +41,7 @@ def build_default_platform_registry(settings: Settings) -> PlatformRegistry:
                 "signed": {"type": "boolean", "label": "Добавить подпись автора", "default": False},
             },
             features={"scheduled_publish": True, "links": True},
+            media_storage=media_storage,
         )
     )
     registry.register(
@@ -71,6 +75,7 @@ def build_default_platform_registry(settings: Settings) -> PlatformRegistry:
             },
             features={"carousel": True, "stories": True, "reels": True, "scheduled_publish": True},
             limits={"caption_chars": 2200},
+            media_storage=media_storage,
         )
     )
     registry.register(
@@ -95,6 +100,7 @@ def build_default_platform_registry(settings: Settings) -> PlatformRegistry:
                 "disable_stitch": {"type": "boolean", "label": "Отключить Stitch", "default": settings.tiktok_default_disable_stitch},
             },
             features={"video": True, "draft_upload": True, "scheduled_publish": True},
+            media_storage=media_storage,
         )
     )
     return registry
