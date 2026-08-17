@@ -86,6 +86,7 @@ CREATE TABLE IF NOT EXISTS publications_v2 (
     account_id INTEGER NOT NULL,
     destination TEXT,
     scheduled_at TEXT,
+    next_attempt_at TEXT,
     status TEXT NOT NULL DEFAULT 'draft',
     external_post_id TEXT,
     external_url TEXT,
@@ -101,7 +102,7 @@ CREATE TABLE IF NOT EXISTS publications_v2 (
 );
 
 CREATE INDEX IF NOT EXISTS idx_publications_v2_due
-    ON publications_v2(status, scheduled_at);
+    ON publications_v2(status, next_attempt_at, scheduled_at);
 CREATE INDEX IF NOT EXISTS idx_publications_v2_account
     ON publications_v2(account_id, status);
 
