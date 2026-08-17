@@ -11,8 +11,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from autoposter_bot.application.content import ContentApplication
 from autoposter_bot.application.publishing import PublishingApplication
 from autoposter_bot.apps.api.accounts import build_accounts_router
+from autoposter_bot.apps.api.analytics import build_analytics_router
 from autoposter_bot.apps.api.auth import build_auth_router
 from autoposter_bot.apps.api.authorization import require_minimum_role
+from autoposter_bot.apps.api.invitations import build_invitations_router
 from autoposter_bot.apps.api.login import build_public_login_router
 from autoposter_bot.apps.api.media import build_media_router
 from autoposter_bot.apps.api.oauth import build_oauth_router
@@ -77,7 +79,7 @@ def _cors_origins() -> list[str]:
 
 app = FastAPI(
     title="Autoposter Content OS API",
-    version="0.10.0",
+    version="0.11.0",
     description=f"Workspace-scoped web/API backend for Autoposter ({persistence.backend}).",
     lifespan=lifespan,
 )
@@ -97,6 +99,18 @@ app.include_router(
     )
 )
 app.include_router(build_auth_router(persistence.auth))
+app.include_router(
+    build_invitations_router(
+        invitations=persistence.invitations,
+        auth_store=persistence.auth,
+    )
+)
+app.include_router(
+    build_analytics_router(
+        analytics=persistence.analytics,
+        store_for_workspace=persistence.scoped,
+    )
+)
 app.include_router(
     build_media_router(
         media_storage,
