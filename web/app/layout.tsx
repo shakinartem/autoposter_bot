@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import "./globals.css";
+import "./media.css";
 import styles from "./shell.module.css";
 
 export const metadata: Metadata = {
