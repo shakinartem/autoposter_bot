@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import os
 from contextlib import asynccontextmanager
 from dataclasses import asdict
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from autoposter_bot.application.content import ContentApplication
@@ -22,38 +23,51 @@ from autoposter_bot.apps.api.schemas import (
     PublishResultView,
     VariantUpsert,
     VariantView,
+    WorkspaceView,
 )
+from autoposter_bot.apps.api.security import AuthContext, get_auth_context
 from autoposter_bot.config import load_settings
 from autoposter_bot.domain.content import MediaAsset, Publication, PublicationStatus
 from autoposter_bot.infrastructure.content_store import SQLiteContentStore
+from autoposter_bot.infrastructure.workspace_schema import init_workspace_schema
+from autoposter_bot.infrastructure.workspace_store import WorkspaceContentStore
 from autoposter_bot.platforms.factory import build_default_platform_registry
 
 
 settings = load_settings()
-store = SQLiteContentStore(settings.database_path)
+base_store = SQLiteContentStore(settings.database_path)
 registry = build_default_platform_registry(settings)
-content_application = ContentApplication(store)
 publishing_application = PublishingApplication(registry)
+CurrentAuth = Annotated[AuthContext, Depends(get_auth_context)]
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    store.init_schema()
+    base_store.init_schema()
+    init_workspace_schema(base_store)
     yield
+
+
+def _cors_origins() -> list[str]:
+    raw = os.getenv(
+        "AUTOPOSTER_CORS_ORIGINS",
+        "http://localhost:3000,http://127.0.0.1:3000",
+    )
+    return [item.strip().rstrip("/") for item in raw.split(",") if item.strip()]
 
 
 app = FastAPI(
     title="Autoposter Content OS API",
-    version="0.2.0",
-    description="Web/API-first content distribution backend for Autoposter.",
+    version="0.3.0",
+    description="Workspace-scoped web/API backend for Autoposter.",
     lifespan=lifespan,
 )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=_cors_origins(),
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 
@@ -62,17 +76,32 @@ def health() -> HealthView:
     return HealthView(status="ok", service="autoposter-api", version=app.version)
 
 
+def _store(auth: AuthContext) -> WorkspaceContentStore:
+    scoped = WorkspaceContentStore(base_store, auth.workspace_id)
+    if scoped.get_workspace() is None:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Workspace {auth.workspace_id} is not initialized",
+        )
+    return scoped
+
+
+@app.get("/api/v1/workspace", response_model=WorkspaceView)
+def current_workspace(auth: CurrentAuth) -> WorkspaceView:
+    workspace = _store(auth).get_workspace()
+    assert workspace is not None
+    return WorkspaceView(**workspace)
+
+
 @app.get("/api/v1/platforms")
-def list_platforms() -> dict[str, Any]:
-    return {
-        name: asdict(capability)
-        for name, capability in registry.capabilities().items()
-    }
+def list_platforms(auth: CurrentAuth) -> dict[str, Any]:
+    _store(auth)
+    return {name: asdict(capability) for name, capability in registry.capabilities().items()}
 
 
 @app.get("/api/v1/accounts", response_model=list[AccountView])
-def list_accounts(platform: str | None = Query(default=None)) -> list[AccountView]:
-    accounts = store.list_accounts()
+def list_accounts(auth: CurrentAuth, platform: str | None = Query(default=None)) -> list[AccountView]:
+    accounts = _store(auth).list_accounts()
     if platform:
         accounts = [item for item in accounts if item["platform"].lower() == platform.lower()]
     return [
@@ -89,8 +118,9 @@ def list_accounts(platform: str | None = Query(default=None)) -> list[AccountVie
 
 
 @app.post("/api/v1/content", response_model=ContentView, status_code=201)
-def create_content(payload: ContentCreate) -> ContentView:
-    item = content_application.create(
+def create_content(payload: ContentCreate, auth: CurrentAuth) -> ContentView:
+    scoped = _store(auth)
+    item = ContentApplication(scoped).create(
         title=payload.title,
         body=payload.body,
         cta=payload.cta,
@@ -98,29 +128,31 @@ def create_content(payload: ContentCreate) -> ContentView:
         hashtags=payload.hashtags,
         media=[_media_from_payload(media) for media in payload.media],
         metadata=payload.metadata,
-        workspace_id=payload.workspace_id,
+        workspace_id=auth.workspace_id,
     )
     return _content_view(item)
 
 
 @app.get("/api/v1/content", response_model=list[ContentView])
 def list_content(
+    auth: CurrentAuth,
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> list[ContentView]:
-    return [_content_view(item) for item in store.list_content(limit=limit, offset=offset)]
+    return [_content_view(item) for item in _store(auth).list_content(limit=limit, offset=offset)]
 
 
 @app.get("/api/v1/content/{content_id}", response_model=ContentView)
-def get_content(content_id: str) -> ContentView:
-    item = store.get_content(content_id)
+def get_content(content_id: str, auth: CurrentAuth) -> ContentView:
+    item = _store(auth).get_content(content_id)
     if item is None:
         raise HTTPException(status_code=404, detail="Content item not found")
     return _content_view(item)
 
 
 @app.patch("/api/v1/content/{content_id}", response_model=ContentView)
-def update_content(content_id: str, payload: ContentUpdate) -> ContentView:
+def update_content(content_id: str, payload: ContentUpdate, auth: CurrentAuth) -> ContentView:
+    scoped = _store(auth)
     changes = payload.model_dump(exclude_unset=True)
     if "media" in changes:
         changes["media"] = [_media_from_payload(MediaPayload.model_validate(media)) for media in changes["media"] or []]
@@ -133,21 +165,23 @@ def update_content(content_id: str, payload: ContentUpdate) -> ContentView:
     if "metadata" in changes and changes["metadata"] is None:
         changes["metadata"] = {}
 
-    item = content_application.update(content_id, **changes)
+    item = ContentApplication(scoped).update(content_id, **changes)
     if item is None:
         raise HTTPException(status_code=404, detail="Content item not found")
     return _content_view(item)
 
 
 @app.get("/api/v1/content/{content_id}/variants", response_model=list[VariantView])
-def list_variants(content_id: str) -> list[VariantView]:
-    if store.get_content(content_id) is None:
+def list_variants(content_id: str, auth: CurrentAuth) -> list[VariantView]:
+    scoped = _store(auth)
+    if scoped.get_content(content_id) is None:
         raise HTTPException(status_code=404, detail="Content item not found")
-    return [_variant_view(variant) for variant in store.list_variants(content_id)]
+    return [_variant_view(variant) for variant in scoped.list_variants(content_id)]
 
 
 @app.put("/api/v1/content/{content_id}/variants/{platform}", response_model=VariantView)
-def upsert_variant(content_id: str, platform: str, payload: VariantUpsert) -> VariantView:
+def upsert_variant(content_id: str, platform: str, payload: VariantUpsert, auth: CurrentAuth) -> VariantView:
+    scoped = _store(auth)
     try:
         registry.get(platform)
     except KeyError as exc:
@@ -165,26 +199,27 @@ def upsert_variant(content_id: str, platform: str, payload: VariantUpsert) -> Va
     if "metadata" in changes and changes["metadata"] is None:
         changes["metadata"] = {}
 
-    variant = content_application.upsert_variant(content_id, platform, **changes)
+    variant = ContentApplication(scoped).upsert_variant(content_id, platform, **changes)
     if variant is None:
         raise HTTPException(status_code=404, detail="Content item not found")
     return _variant_view(variant)
 
 
 @app.get("/api/v1/variants/{variant_id}", response_model=VariantView)
-def get_variant(variant_id: str) -> VariantView:
-    variant = store.get_variant(variant_id)
+def get_variant(variant_id: str, auth: CurrentAuth) -> VariantView:
+    variant = _store(auth).get_variant(variant_id)
     if variant is None:
         raise HTTPException(status_code=404, detail="Platform variant not found")
     return _variant_view(variant)
 
 
 @app.post("/api/v1/variants/{variant_id}/publications", response_model=PublicationView, status_code=201)
-def create_publication(variant_id: str, payload: PublicationCreate) -> PublicationView:
-    variant = store.get_variant(variant_id)
+def create_publication(variant_id: str, payload: PublicationCreate, auth: CurrentAuth) -> PublicationView:
+    scoped = _store(auth)
+    variant = scoped.get_variant(variant_id)
     if variant is None:
         raise HTTPException(status_code=404, detail="Platform variant not found")
-    account = store.get_account(payload.account_id)
+    account = scoped.get_account(payload.account_id)
     if account is None:
         raise HTTPException(status_code=404, detail="Social account not found")
     if account["platform"].lower() != variant.platform.lower():
@@ -201,12 +236,13 @@ def create_publication(variant_id: str, payload: PublicationCreate) -> Publicati
         scheduled_at=payload.scheduled_at,
         status=(PublicationStatus.SCHEDULED if payload.scheduled_at else PublicationStatus.DRAFT),
     )
-    store.save_publication(publication)
+    scoped.save_publication(publication)
     return _publication_view(publication)
 
 
 @app.get("/api/v1/publications", response_model=list[PublicationView])
 def list_publications(
+    auth: CurrentAuth,
     status: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> list[PublicationView]:
@@ -216,26 +252,27 @@ def list_publications(
             parsed_status = PublicationStatus(status)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=f"Unknown publication status: {status}") from exc
-    return [_publication_view(item) for item in store.list_publications(status=parsed_status, limit=limit)]
+    return [_publication_view(item) for item in _store(auth).list_publications(status=parsed_status, limit=limit)]
 
 
 @app.get("/api/v1/publications/{publication_id}", response_model=PublicationView)
-def get_publication(publication_id: str) -> PublicationView:
-    publication = store.get_publication(publication_id)
+def get_publication(publication_id: str, auth: CurrentAuth) -> PublicationView:
+    publication = _store(auth).get_publication(publication_id)
     if publication is None:
         raise HTTPException(status_code=404, detail="Publication not found")
     return _publication_view(publication)
 
 
 @app.post("/api/v1/publications/{publication_id}/publish", response_model=PublishResultView)
-def publish(publication_id: str, payload: PublishRequest) -> PublishResultView:
-    publication = store.get_publication(publication_id)
+def publish(publication_id: str, payload: PublishRequest, auth: CurrentAuth) -> PublishResultView:
+    scoped = _store(auth)
+    publication = scoped.get_publication(publication_id)
     if publication is None:
         raise HTTPException(status_code=404, detail="Publication not found")
-    variant = store.get_variant(publication.variant_id)
+    variant = scoped.get_variant(publication.variant_id)
     if variant is None:
         raise HTTPException(status_code=409, detail="Publication variant no longer exists")
-    account = store.get_account(publication.account_id)
+    account = scoped.get_account(publication.account_id)
     if account is None:
         raise HTTPException(status_code=409, detail="Publication social account no longer exists")
 
@@ -250,8 +287,8 @@ def publish(publication_id: str, payload: PublishRequest) -> PublishResultView:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     if not payload.dry_run:
-        store.save_publication(publication)
-        store.record_attempt(publication, result)
+        scoped.save_publication(publication)
+        scoped.record_attempt(publication, result)
     return PublishResultView(**asdict(result))
 
 
