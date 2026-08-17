@@ -72,11 +72,9 @@ class Publication:
     account_id: int
     id: str = field(default_factory=lambda: str(uuid4()))
     destination: str | None = None
-    # The user's intended schedule. Never rewrite this when retrying because it
-    # is part of the publication-performance dataset and lateness measurement.
+    # The user's intended schedule. Retry timing is queue infrastructure state
+    # and must never rewrite this value because schedule punctuality is product data.
     scheduled_at: datetime | None = None
-    # Internal delivery schedule for retries. None means use scheduled_at.
-    next_attempt_at: datetime | None = None
     status: PublicationStatus = PublicationStatus.DRAFT
     external_post_id: str | None = None
     external_url: str | None = None
