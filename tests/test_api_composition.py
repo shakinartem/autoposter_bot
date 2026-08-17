@@ -13,17 +13,23 @@ def _paths() -> set[str]:
     return set(app.openapi().get("paths", {}))
 
 
-def test_oauth_connection_routes_are_mounted_in_fastapi_app():
+def test_public_login_and_social_oauth_routes_are_mounted():
     paths = _paths()
 
+    assert "/auth/providers" in paths
+    assert "/auth/telegram/start" in paths
+    assert "/auth/telegram/callback" in paths
+    assert "/auth/login-grant/exchange" in paths
     assert "/api/v1/oauth/providers" in paths
     assert "/api/v1/oauth/{platform}/start" in paths
     assert "/api/v1/oauth/{platform}/callback" in paths
 
 
-def test_account_media_and_publish_routes_remain_mounted_with_oauth_layer():
+def test_auth_account_media_and_publish_routes_remain_mounted():
     paths = _paths()
 
+    assert "/api/v1/auth/me" in paths
+    assert "/api/v1/members" in paths
     assert "/api/v1/accounts" in paths
     assert "/api/v1/account-connections" in paths
     assert "/api/v1/media" in paths
