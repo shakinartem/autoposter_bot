@@ -23,13 +23,7 @@ _LEGACY_REMOTE_ID_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
 
 
 def _recover_legacy_remote_id(platform: str, result: PublicationResult) -> PublicationResult:
-    """Normalize successful legacy adapter details into the canonical remote id.
-
-    Older adapters reported successful remote identifiers only in a human-readable
-    `legacy_detail` string. Keeping that identifier out of Publication breaks status
-    reconciliation and downstream analytics, so recover it at the application boundary
-    while the adapters are migrated to structured PublicationResult fields.
-    """
+    """Normalize successful legacy adapter details into the canonical remote id."""
     if not result.ok or result.external_post_id:
         return result
     raw = result.raw_response or {}
@@ -47,8 +41,10 @@ def _recover_legacy_remote_id(platform: str, result: PublicationResult) -> Publi
 class PublishingApplication:
     """Application service for one platform-specific publication.
 
-    Publication lifecycle belongs here instead of inside Telegram UI or a scheduler.
-    Web, bot, API and workers can all call the same method.
+    `attempt_started=True` is used by durable workers after they have persisted
+    the `publishing` state and attempt number before the first network call.
+    This prevents a process crash from leaving a remote POST behind while the
+    database still claims it was safe to retry.
     """
 
     def __init__(self, registry: PlatformRegistry) -> None:
@@ -61,6 +57,7 @@ class PublishingApplication:
         *,
         account_options: dict[str, Any],
         dry_run: bool = False,
+        attempt_started: bool = False,
     ) -> PublicationResult:
         if variant.id != publication.variant_id:
             return PublicationResult(
@@ -91,7 +88,7 @@ class PublishingApplication:
                 error_message=issues[0].message,
             )
 
-        if not dry_run:
+        if not dry_run and not attempt_started:
             publication.attempt_count += 1
             publication.status = PublicationStatus.PUBLISHING
 
