@@ -110,6 +110,19 @@ class PublishResultView(BaseModel):
     raw_response: dict[str, Any] = Field(default_factory=dict)
 
 
+class AccountCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    platform: str = Field(min_length=1, max_length=40)
+    destination: str | None = None
+    options: dict[str, Any] = Field(default_factory=dict)
+
+
+class AccountUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=160)
+    destination: str | None = None
+    options: dict[str, Any] | None = None
+
+
 class AccountView(BaseModel):
     id: int
     owner_user_id: int | None
