@@ -7,6 +7,7 @@ on:
   pull_request:
     branches:
       - product-platform
+      - content-os-foundation
 
 jobs:
   python:
@@ -39,8 +40,29 @@ jobs:
           pip install -e ".[dev]"
       - name: Compile Python package
         run: python -m compileall autoposter_bot
+      - name: Import integrated API contract
+        env:
+          CONTENT_FACTORY_INGEST_TOKEN: ci-content-factory-token
+          AUTOPOSTER_ANALYTICS_INGEST_TOKEN: ci-analytics-token
+          AUTOPOSTER_DB_PATH: /tmp/autoposter-ci.sqlite3
+        run: |
+          python -c "from autoposter_bot.apps.api.integrated_main import app; paths=app.openapi()['paths']; assert '/api/v1/integrations/content-factory/packages' in paths; assert '/api/v1/integrations/content-factory/publications/{publication_id}/performance' in paths; print(app.version)"
       - name: Run tests
-        run: pytest -q
+        shell: bash
+        run: |
+          set -o pipefail
+          pytest -q 2>&1 | tee /tmp/pytest.log || {
+            echo "::group::pytest failure tail"
+            tail -n 140 /tmp/pytest.log
+            echo "::endgroup::"
+            while IFS= read -r line; do
+              safe=${line//'%'/'%25'}
+              safe=${safe//$'\r'/'%0D'}
+              safe=${safe//$'\n'/'%0A'}
+              echo "::error title=pytest::$safe"
+            done < <(tail -n 80 /tmp/pytest.log)
+            exit 1
+          }
 
   web:
     runs-on: ubuntu-latest
