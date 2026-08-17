@@ -4,10 +4,11 @@ import os
 import time
 
 from autoposter_bot.application.content_factory_feedback import ContentFactoryFeedback
-from autoposter_bot.application.publishing import PublishingApplication
+from autoposter_bot.application.media_publishing import MediaResolvingPublishingApplication
 from autoposter_bot.apps.worker.scheduler import PublicationWorker
 from autoposter_bot.config import load_settings
 from autoposter_bot.infrastructure.content_factory_ledger import ContentFactoryLedger
+from autoposter_bot.infrastructure.media_storage import build_media_storage
 from autoposter_bot.infrastructure.persistence import build_persistence
 from autoposter_bot.platforms.factory import build_default_platform_registry
 
@@ -18,7 +19,11 @@ def main() -> None:
     persistence.init_schema()
     ledger = ContentFactoryLedger(persistence)
     ledger.init_schema()
-    publishing = PublishingApplication(build_default_platform_registry(settings))
+    media_storage = build_media_storage(settings)
+    publishing = MediaResolvingPublishingApplication(
+        build_default_platform_registry(settings),
+        media_storage,
+    )
     worker = PublicationWorker(
         store=persistence.store,
         queue=persistence.queue,
