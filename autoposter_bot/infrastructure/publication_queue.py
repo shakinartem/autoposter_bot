@@ -12,8 +12,6 @@ class SQLitePublicationQueue:
 
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
-        # A clean checkout has no runtime data directory yet. Queue bootstrap
-        # must be safe before the wider persistence schema is initialized.
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         init_retry_schema(backend="sqlite", connect=self._connect)
 
@@ -67,7 +65,7 @@ class SQLitePublicationQueue:
                 UPDATE publications_v2
                 SET status = 'scheduled', next_attempt_at = ?, updated_at = ?
                 WHERE id = ?
-                  AND status IN ('failed', 'queued', 'publishing')
+                  AND status IN ('failed', 'queued')
                   AND published_at IS NULL
                   AND external_post_id IS NULL
                 """,
@@ -86,6 +84,35 @@ class SQLitePublicationQueue:
                 (now.isoformat(), publication_id),
             )
             connection.commit()
+        finally:
+            connection.close()
+
+    def quarantine_stale_publishing(
+        self,
+        now: datetime,
+        *,
+        stale_after: timedelta = timedelta(hours=2),
+    ) -> int:
+        cutoff = (now - stale_after).isoformat()
+        connection = self._connect()
+        try:
+            cursor = connection.execute(
+                """
+                UPDATE publications_v2
+                SET status = 'failed',
+                    next_attempt_at = NULL,
+                    last_error_code = 'unknown_publish_outcome',
+                    last_error_message = 'Worker stopped after remote publish started; reconcile the platform before retrying',
+                    updated_at = ?
+                WHERE status = 'publishing'
+                  AND updated_at < ?
+                  AND published_at IS NULL
+                  AND external_post_id IS NULL
+                """,
+                (now.isoformat(), cutoff),
+            )
+            connection.commit()
+            return int(cursor.rowcount)
         finally:
             connection.close()
 
