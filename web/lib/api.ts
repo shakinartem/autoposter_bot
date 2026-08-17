@@ -96,30 +96,30 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
-    const message =
-      typeof payload?.detail === "string"
-        ? payload.detail
-        : `API request failed: ${response.status}`;
+    const message = typeof payload?.detail === "string" ? payload.detail : `API request failed: ${response.status}`;
     throw new Error(message);
   }
   return response.json() as Promise<T>;
 }
 
-export function getWorkspace(): Promise<Workspace> {
-  return request("/workspace");
+export async function uploadMedia(file: File): Promise<MediaAsset> {
+  const form = new FormData();
+  form.append("file", file);
+  const response = await fetch(`${API_URL}/media`, {
+    method: "POST",
+    body: form,
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(typeof payload?.detail === "string" ? payload.detail : `Media upload failed: ${response.status}`);
+  }
+  return response.json() as Promise<MediaAsset>;
 }
 
-export function listPlatforms(): Promise<Record<string, PlatformCapability>> {
-  return request("/platforms");
-}
-
-export function listAccounts(): Promise<SocialAccount[]> {
-  return request("/accounts");
-}
-
-export function listContent(): Promise<ContentItem[]> {
-  return request("/content");
-}
+export function getWorkspace(): Promise<Workspace> { return request("/workspace"); }
+export function listPlatforms(): Promise<Record<string, PlatformCapability>> { return request("/platforms"); }
+export function listAccounts(): Promise<SocialAccount[]> { return request("/accounts"); }
+export function listContent(): Promise<ContentItem[]> { return request("/content"); }
 
 export function createContent(payload: {
   title: string;
@@ -129,25 +129,17 @@ export function createContent(payload: {
   hashtags?: string[];
   media?: MediaAsset[];
 }): Promise<ContentItem> {
-  return request("/content", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
+  return request("/content", { method: "POST", body: JSON.stringify(payload) });
 }
 
 export function updateContent(
   contentId: string,
   payload: Partial<Pick<ContentItem, "title" | "body" | "cta" | "links" | "hashtags" | "media">>,
 ): Promise<ContentItem> {
-  return request(`/content/${contentId}`, {
-    method: "PATCH",
-    body: JSON.stringify(payload),
-  });
+  return request(`/content/${contentId}`, { method: "PATCH", body: JSON.stringify(payload) });
 }
 
-export function listVariants(contentId: string): Promise<PlatformVariant[]> {
-  return request(`/content/${contentId}/variants`);
-}
+export function listVariants(contentId: string): Promise<PlatformVariant[]> { return request(`/content/${contentId}/variants`); }
 
 export function upsertVariant(
   contentId: string,
@@ -160,20 +152,14 @@ export function upsertVariant(
     sync_with_master?: boolean;
   },
 ): Promise<PlatformVariant> {
-  return request(`/content/${contentId}/variants/${platform}`, {
-    method: "PUT",
-    body: JSON.stringify(payload),
-  });
+  return request(`/content/${contentId}/variants/${platform}`, { method: "PUT", body: JSON.stringify(payload) });
 }
 
 export function createPublication(
   variantId: string,
   payload: { account_id: number; destination?: string | null; scheduled_at?: string | null },
 ): Promise<Publication> {
-  return request(`/variants/${variantId}/publications`, {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
+  return request(`/variants/${variantId}/publications`, { method: "POST", body: JSON.stringify(payload) });
 }
 
 export function listPublications(status?: string): Promise<Publication[]> {
