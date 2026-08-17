@@ -11,43 +11,60 @@ ContentItem (master idea)
       -> PublicationAttempt (retry/idempotency/audit)
 ```
 
-Telegram bot is retained as a mobile control surface. It must call the same application layer as the web app and worker rather than owning product logic.
+Telegram remains a mobile control surface. Product logic belongs to the shared application layer used by web, API and workers.
 
 ## Current architecture
 
 ```text
-web/ (Next.js)
-        |
-        v
-FastAPI: autoposter_bot.apps.api
-        |
-        +-- ContentApplication
-        +-- PublishingApplication
-        |
-        +-- SQLiteContentStore (development bridge)
-        +-- PlatformRegistry
-        |     +-- Telegram legacy adapter
-        |     +-- VK legacy adapter
-        |     +-- Instagram legacy adapter
-        |     +-- TikTok legacy adapter
-        |
-        v
-autoposter-worker
+Browser
+  -> Next.js BFF (/api/autoposter/*)
+       -> server-only workspace API key
+          -> FastAPI
+               -> AuthContext(workspace_id)
+               -> WorkspaceContentStore
+               -> ContentApplication / PublishingApplication
+               -> PlatformRegistry
+                    -> Telegram / VK / Instagram / TikTok adapters
+
+Scheduled publications
+  -> autoposter-worker
+       -> global queue claim
+       -> same PublishingApplication
 ```
 
-## Implemented in this branch
+The browser never receives platform credentials or the workspace API key.
 
-- Master content and platform variants.
-- Automatic master synchronization until a variant is manually overridden.
-- Per-platform capabilities registry.
-- Independent publications per social account.
-- Publication attempts and retry metadata.
-- FastAPI endpoints for content, variants, accounts and publications.
-- Functional Next.js composer.
-- Dry-run and publish-now flow.
-- Scheduled publication worker with atomic SQLite claiming.
-- Stale queued-publication recovery.
-- CI for Python tests/compile and Next.js typecheck/build.
+## Workspace security
+
+Every FastAPI `/api/v1/*` request requires a Bearer key by default. Keys are mapped to exactly one workspace:
+
+```env
+AUTOPOSTER_REQUIRE_API_AUTH=1
+AUTOPOSTER_API_KEYS_JSON={"replace-with-a-long-random-key":1}
+```
+
+A client cannot choose `workspace_id` in request JSON. Content, variants, publications and social accounts are scoped in SQL by the workspace resolved from the credential.
+
+For local-only development you can explicitly disable auth:
+
+```env
+AUTOPOSTER_REQUIRE_API_AUTH=0
+AUTOPOSTER_DEV_WORKSPACE_ID=1
+```
+
+Do not use development mode on an Internet-facing server.
+
+## Bootstrap a workspace
+
+Workspaces currently reuse existing bot users and social accounts during staged migration.
+
+```bash
+autoposter-workspace list
+autoposter-workspace create --name "My workspace" --owner-user-id 1
+autoposter-workspace link-account --workspace-id 1 --account-id 7
+```
+
+Accounts owned by the workspace owner are visible automatically. `link-account` is for explicitly sharing an additional legacy social account into a workspace.
 
 ## Run locally
 
@@ -65,8 +82,6 @@ OpenAPI: `http://localhost:8000/docs`
 
 ### Worker
 
-In a second terminal:
-
 ```bash
 autoposter-worker
 ```
@@ -79,9 +94,12 @@ AUTOPOSTER_API_PORT=8000
 AUTOPOSTER_API_RELOAD=1
 AUTOPOSTER_WORKER_INTERVAL_SECONDS=5
 AUTOPOSTER_WORKER_BATCH_SIZE=25
+AUTOPOSTER_CORS_ORIGINS=http://localhost:3000
 ```
 
 ### Web
+
+The web app uses a server-side BFF. The API key must never use a `NEXT_PUBLIC_` prefix.
 
 ```bash
 cd web
@@ -90,22 +108,45 @@ npm install
 npm run dev
 ```
 
+`web/.env.local`:
+
+```env
+AUTOPOSTER_API_URL=http://127.0.0.1:8000
+AUTOPOSTER_API_KEY=replace-with-the-key-mapped-to-your-workspace
+```
+
 Web: `http://localhost:3000`
+
+## Implemented in this branch
+
+- Master content and platform variants.
+- Automatic master synchronization until a variant is manually overridden.
+- Per-platform capabilities registry.
+- Independent publications per social account.
+- Publication attempts and retry metadata.
+- FastAPI content/variant/account/publication endpoints.
+- Workspace-bound API authentication.
+- SQL tenant isolation for content, variants, publications and social accounts.
+- Server-side Next.js API proxy so workspace keys stay out of browser JavaScript.
+- Functional Next.js composer.
+- Dry-run and publish-now flow.
+- Scheduled publication worker with atomic SQLite claiming.
+- Stale queued-publication recovery.
+- CI for Python tests/compile and Next.js typecheck/build.
 
 ## Migration strategy
 
-The existing `users`, `accounts`, billing and legacy jobs remain untouched during the migration. Content OS tables are added by `migrations/002_content_os.sql` and social account credentials are read through a compatibility bridge.
+The existing `users`, `accounts`, billing and legacy jobs remain authoritative during staged migration. Content OS tables are additive. `workspace_accounts` provides an explicit bridge for sharing existing social accounts into the new workspace model without moving credentials into frontend storage.
 
-SQLite is intentionally retained only for this staged development phase. Before public multi-user deployment, persistence should move to PostgreSQL and the publication claim implementation should use row-level locks / `SKIP LOCKED` semantics.
+SQLite remains a development bridge. The next persistence milestone is PostgreSQL with transaction-safe row locking / `SKIP LOCKED` queue claiming.
 
-## Deployment blockers before public exposure
+## Remaining blockers before public SaaS exposure
 
-1. Web authentication and workspace authorization.
-2. PostgreSQL migration.
+1. End-user login/session management and workspace membership roles (the current API-key boundary is suitable for internal/server-to-server deployment).
+2. PostgreSQL persistence.
 3. Encrypted credential storage / secrets boundary.
 4. Object storage and media preprocessing service.
-5. OAuth callback flows for each platform.
+5. Native OAuth callback flows for each platform.
 6. Platform-native adapter validation and structured external post IDs.
 7. Rate-limit-aware retries and stronger idempotency policies.
-
-Do not expose the current API directly to the public Internet until authentication and workspace authorization are implemented.
+8. Calendar/publication management and analytics screens.
