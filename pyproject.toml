@@ -1,7 +1,7 @@
 [project]
 name = "autoposter-bot"
-version = "0.4.0"
-description = "Workspace-scoped web/API content distribution platform with Telegram, VK, Instagram, and TikTok adapters"
+version = "0.5.0"
+description = "Workspace-scoped web/API content distribution platform with encrypted social credentials"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -11,6 +11,7 @@ dependencies = [
   "fastapi>=0.116.0",
   "uvicorn[standard]>=0.35.0",
   "psycopg[binary,pool]>=3.3,<4",
+  "cryptography>=46,<51",
 ]
 
 [project.optional-dependencies]
