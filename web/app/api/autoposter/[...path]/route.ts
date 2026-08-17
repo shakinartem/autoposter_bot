@@ -7,6 +7,8 @@ type RouteContext = {
   params: Promise<{ path: string[] }>;
 };
 
+type StreamingRequestInit = RequestInit & { duplex?: "half" };
+
 async function proxy(request: NextRequest, context: RouteContext) {
   if (!API_KEY) {
     return NextResponse.json(
@@ -24,17 +26,17 @@ async function proxy(request: NextRequest, context: RouteContext) {
   if (contentType) headers.set("Content-Type", contentType);
 
   const hasBody = !["GET", "HEAD"].includes(request.method);
-  const body = hasBody ? await request.arrayBuffer() : undefined;
+  const init: StreamingRequestInit = {
+    method: request.method,
+    headers,
+    body: hasBody ? request.body : undefined,
+    cache: "no-store",
+  };
+  if (hasBody && request.body) init.duplex = "half";
 
   try {
-    const response = await fetch(target, {
-      method: request.method,
-      headers,
-      body,
-      cache: "no-store",
-    });
-    const responseBody = await response.arrayBuffer();
-    return new NextResponse(responseBody, {
+    const response = await fetch(target, init);
+    return new NextResponse(response.body, {
       status: response.status,
       headers: {
         "Content-Type": response.headers.get("content-type") ?? "application/json",
