@@ -96,4 +96,6 @@ class LegacyPublisherAdapter(PlatformAdapter):
         media_type = variant.media[0].media_type
         if self.platform == "instagram":
             return "instagram_video" if media_type == "video" else "instagram_feed_image"
+        if self.platform == "tiktok" and media_type == "video":
+            return "tiktok_video"
         return media_type
