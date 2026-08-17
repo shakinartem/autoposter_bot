@@ -1,6 +1,4 @@
-const API_URL =
-  process.env.NEXT_PUBLIC_AUTOPOSTER_API_URL?.replace(/\/$/, "") ??
-  "http://localhost:8000";
+const API_URL = "/api/autoposter";
 
 export type PlatformCapability = {
   platform: string;
@@ -8,6 +6,13 @@ export type PlatformCapability = {
   fields: Record<string, Record<string, unknown>>;
   features: Record<string, boolean>;
   limits: Record<string, number>;
+};
+
+export type Workspace = {
+  id: number;
+  name: string;
+  owner_user_id: number;
+  created_at: string;
 };
 
 export type MediaAsset = {
@@ -100,16 +105,20 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+export function getWorkspace(): Promise<Workspace> {
+  return request("/workspace");
+}
+
 export function listPlatforms(): Promise<Record<string, PlatformCapability>> {
-  return request("/api/v1/platforms");
+  return request("/platforms");
 }
 
 export function listAccounts(): Promise<SocialAccount[]> {
-  return request("/api/v1/accounts");
+  return request("/accounts");
 }
 
 export function listContent(): Promise<ContentItem[]> {
-  return request("/api/v1/content");
+  return request("/content");
 }
 
 export function createContent(payload: {
@@ -120,7 +129,7 @@ export function createContent(payload: {
   hashtags?: string[];
   media?: MediaAsset[];
 }): Promise<ContentItem> {
-  return request("/api/v1/content", {
+  return request("/content", {
     method: "POST",
     body: JSON.stringify(payload),
   });
@@ -130,14 +139,14 @@ export function updateContent(
   contentId: string,
   payload: Partial<Pick<ContentItem, "title" | "body" | "cta" | "links" | "hashtags" | "media">>,
 ): Promise<ContentItem> {
-  return request(`/api/v1/content/${contentId}`, {
+  return request(`/content/${contentId}`, {
     method: "PATCH",
     body: JSON.stringify(payload),
   });
 }
 
 export function listVariants(contentId: string): Promise<PlatformVariant[]> {
-  return request(`/api/v1/content/${contentId}/variants`);
+  return request(`/content/${contentId}/variants`);
 }
 
 export function upsertVariant(
@@ -151,7 +160,7 @@ export function upsertVariant(
     sync_with_master?: boolean;
   },
 ): Promise<PlatformVariant> {
-  return request(`/api/v1/content/${contentId}/variants/${platform}`, {
+  return request(`/content/${contentId}/variants/${platform}`, {
     method: "PUT",
     body: JSON.stringify(payload),
   });
@@ -161,17 +170,19 @@ export function createPublication(
   variantId: string,
   payload: { account_id: number; destination?: string | null; scheduled_at?: string | null },
 ): Promise<Publication> {
-  return request(`/api/v1/variants/${variantId}/publications`, {
+  return request(`/variants/${variantId}/publications`, {
     method: "POST",
     body: JSON.stringify(payload),
   });
 }
 
-export function publishPublication(
-  publicationId: string,
-  dryRun = false,
-): Promise<PublishResult> {
-  return request(`/api/v1/publications/${publicationId}/publish`, {
+export function listPublications(status?: string): Promise<Publication[]> {
+  const query = status ? `?status=${encodeURIComponent(status)}` : "";
+  return request(`/publications${query}`);
+}
+
+export function publishPublication(publicationId: string, dryRun = false): Promise<PublishResult> {
+  return request(`/publications/${publicationId}/publish`, {
     method: "POST",
     body: JSON.stringify({ dry_run: dryRun }),
   });
