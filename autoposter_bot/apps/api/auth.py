@@ -38,6 +38,11 @@ def build_auth_router(auth_store: AuthStore) -> APIRouter:
             "credential_fingerprint": auth.credential_fingerprint,
         }
 
+    @router.delete("/auth/session", status_code=204)
+    def logout(auth: CurrentAuth) -> None:
+        user_id, session_id = user_session(auth)
+        sessions.revoke_current(session_id=session_id, user_id=user_id)
+
     @router.get("/auth/workspaces")
     def user_workspaces(auth: CurrentAuth) -> list[dict[str, Any]]:
         user_id, _ = user_session(auth)
