@@ -21,6 +21,10 @@ class Settings:
     telegram_bot_username: str | None
     telegram_default_destination: str | None
     telegram_admin_user_ids: list[int]
+    telegram_oidc_client_id: str | None
+    telegram_oidc_client_secret: str | None
+    telegram_oidc_redirect_uri: str | None
+    telegram_oidc_scope: str
     vk_token: str | None
     vk_api_version: str
     vk_default_owner_id: str | None
@@ -93,6 +97,10 @@ def load_settings(env_file: str | None = None) -> Settings:
         telegram_bot_username=get_value("TELEGRAM_BOT_USERNAME"),
         telegram_default_destination=get_value("TELEGRAM_DEFAULT_DESTINATION"),
         telegram_admin_user_ids=admin_ids,
+        telegram_oidc_client_id=get_value("TELEGRAM_OIDC_CLIENT_ID"),
+        telegram_oidc_client_secret=get_value("TELEGRAM_OIDC_CLIENT_SECRET"),
+        telegram_oidc_redirect_uri=get_value("TELEGRAM_OIDC_REDIRECT_URI"),
+        telegram_oidc_scope=get_value("TELEGRAM_OIDC_SCOPE", "openid profile") or "openid profile",
         vk_token=get_value("VK_TOKEN"),
         vk_api_version=get_value("VK_API_VERSION", "5.199") or "5.199",
         vk_default_owner_id=get_value("VK_DEFAULT_OWNER_ID"),
