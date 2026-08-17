@@ -1,0 +1,73 @@
+name: Container CI
+
+on:
+  push:
+    branches: [content-os-foundation]
+    paths:
+      - "Dockerfile"
+      - ".dockerignore"
+      - "pyproject.toml"
+      - "autoposter_bot/**"
+      - "migrations/**"
+      - "web/**"
+      - "deploy/**"
+      - ".github/workflows/container-ci.yml"
+  pull_request:
+    paths:
+      - "Dockerfile"
+      - ".dockerignore"
+      - "pyproject.toml"
+      - "autoposter_bot/**"
+      - "migrations/**"
+      - "web/**"
+      - "deploy/**"
+      - ".github/workflows/container-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  containers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Python runtime image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          load: false
+          cache-from: type=gha,scope=autoposter-python
+          cache-to: type=gha,mode=max,scope=autoposter-python
+
+      - name: Build Next.js runtime image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./web
+          file: ./web/Dockerfile
+          push: false
+          load: false
+          cache-from: type=gha,scope=autoposter-web
+          cache-to: type=gha,mode=max,scope=autoposter-web
+
+      - name: Validate compose configuration
+        env:
+          AUTOPOSTER_DOMAIN: autoposter.example.com
+          POSTGRES_PASSWORD: ci-url-safe-password
+        run: |
+          cp .env.example .env
+          docker compose --env-file .env -f deploy/docker-compose.prod.yml config >/tmp/compose.yml
+          test -s /tmp/compose.yml
+
+      - name: Validate Caddy configuration
+        run: |
+          docker run --rm \
+            -e AUTOPOSTER_DOMAIN=autoposter.example.com \
+            -v "$PWD/deploy/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            caddy:2.10-alpine caddy validate --config /etc/caddy/Caddyfile
