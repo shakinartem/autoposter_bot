@@ -149,6 +149,7 @@ class PublishingApplication:
             publication.published_at = None
             publication.last_error_code = None
             publication.last_error_message = None
+            publication.metadata.setdefault("processing_started_at", datetime.now().isoformat())
             return
 
         if result.ok:
