@@ -148,6 +148,7 @@ class PublicationWorker:
                 if progress.status == "processing":
                     publication.status = PublicationStatus.PROCESSING
                 publication.metadata["provider_tracking_recorded_at"] = datetime.now().isoformat()
+                publication.metadata.setdefault("processing_started_at", publication.metadata["provider_tracking_recorded_at"])
                 publication.metadata["provider_tracking_phase"] = progress.raw_response.get("phase")
                 self.store.save_publication(publication)
 
