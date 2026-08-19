@@ -73,6 +73,7 @@ Then open `https://$AUTOPOSTER_DOMAIN/login` and complete Telegram Web Login.
 - `reconciliation-worker`: async provider status resolution for `processing`/trackable ambiguous publications.
 - `analytics-worker`: milestone performance snapshots; currently Instagram collector only.
 - `health-worker`: deduplicated critical workspace health alerts to active Telegram admin/owner recipients.
+- `account-health-worker`: read-only TikTok/Instagram/Telegram credential probes; VK stays explicitly unverified until a safe remote probe is enabled.
 - `postgres`: production persistence and queue locking.
 - `caddy`: TLS termination and minimal public routing.
 

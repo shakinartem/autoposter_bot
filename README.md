@@ -175,16 +175,18 @@ API / worker / operator tools:
 autoposter-api
 autoposter-worker
 autoposter-reconciler
+autoposter-health
+autoposter-account-health
 autoposter-workspace --help
 autoposter-session --help
 ```
 
 ## Near-term roadmap
 
-1. posting-compatible VK connection flow;
+1. posting-compatible VK connection flow + verified read-only VK health probe;
 2. analytics collectors для TikTok / VK / Telegram там, где provider API даёт метрики;
 3. webhook-driven reconciliation как дополнение к polling;
 4. orphan media lifecycle cleanup;
-5. audit/notification layer для operational incidents и team actions;
+5. расширение account-health remediation и audit для team actions;
 6. дополнительные native platforms, включая YouTube;
 7. derived insights + recommendation layer на данных `content -> variant -> publication -> performance`.

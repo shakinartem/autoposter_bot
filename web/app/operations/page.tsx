@@ -4,12 +4,16 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   getOperationsOverview,
   getOperationsAlertState,
+  listAccountHealth,
+  probeAccount,
+  probeWorkspaceAccounts,
   listOperationsEvents,
   listReconciliationItems,
   resolveReconciliation,
   type OperationsEvent,
   type OperationsOverview,
   type OperationsAlertState,
+  type AccountHealth,
   type ReconciliationItem,
 } from "@/lib/api";
 import styles from "./operations.module.css";
@@ -44,6 +48,7 @@ function reasonLabel(code: string): string {
     queue_lag: "Очередь публикаций отстаёт",
     stale_provider_processing: "Provider processing завис",
     attempt_failure_rate: "Высокая доля ошибок публикации",
+    social_connection_health: "Проблема подключения соцсети",
   };
   return labels[code] ?? code;
 }
@@ -52,6 +57,7 @@ export default function OperationsPage() {
   const [overview, setOverview] = useState<OperationsOverview | null>(null);
   const [alertState, setAlertState] = useState<OperationsAlertState | null>(null);
   const [reconciliation, setReconciliation] = useState<ReconciliationItem[]>([]);
+  const [accountHealth, setAccountHealth] = useState<AccountHealth[]>([]);
   const [events, setEvents] = useState<OperationsEvent[]>([]);
   const [notice, setNotice] = useState("Загружаю состояние системы…");
   const [busy, setBusy] = useState(false);
@@ -64,14 +70,16 @@ export default function OperationsPage() {
   const load = useCallback(async () => {
     setBusy(true);
     try {
-      const [overviewPayload, alertPayload, recoveryPayload, eventPayload] = await Promise.all([
+      const [overviewPayload, alertPayload, accountHealthPayload, recoveryPayload, eventPayload] = await Promise.all([
         getOperationsOverview(),
         getOperationsAlertState(),
+        listAccountHealth(),
         listReconciliationItems(),
         listOperationsEvents(30),
       ]);
       setOverview(overviewPayload);
       setAlertState(alertPayload);
+      setAccountHealth(accountHealthPayload);
       setReconciliation(recoveryPayload);
       setEvents(eventPayload);
       setNotice(`Срез обновлён ${date(overviewPayload.generated_at)}`);
@@ -128,6 +136,39 @@ export default function OperationsPage() {
     },
     [load, notes, remoteIds, remoteUrls, retryAck],
   );
+
+  const probe = useCallback(async (accountId: number) => {
+    setActionBusy(`account-${accountId}`);
+    try {
+      const result = await probeAccount(accountId);
+      setAccountHealth((current) => {
+        const next = current.filter((item) => item.account_id !== accountId);
+        return [...next, result].sort((a, b) => a.platform.localeCompare(b.platform) || (a.account_name ?? "").localeCompare(b.account_name ?? ""));
+      });
+      const freshOverview = await getOperationsOverview();
+      setOverview(freshOverview);
+      setNotice(`${result.account_name ?? result.platform}: ${result.message}`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Не удалось проверить social connection");
+    } finally {
+      setActionBusy(null);
+    }
+  }, []);
+
+  const probeAll = useCallback(async () => {
+    setActionBusy("accounts-all");
+    try {
+      const results = await probeWorkspaceAccounts();
+      setAccountHealth(results);
+      const freshOverview = await getOperationsOverview();
+      setOverview(freshOverview);
+      setNotice(`Проверено social connections: ${results.length}`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Не удалось проверить подключения");
+    } finally {
+      setActionBusy(null);
+    }
+  }, []);
 
   return (
     <main className={styles.page}>
@@ -238,6 +279,52 @@ export default function OperationsPage() {
           </div>
         </section>
       </div>
+
+      <section className={`${styles.panel} ${styles.connectionsPanel}`}>
+        <header>
+          <div>
+            <p className={styles.eyebrow}>SOCIAL CONNECTION READINESS</p>
+            <h2>Подключения площадок</h2>
+          </div>
+          <div className={styles.connectionHeaderActions}>
+            <span>{overview?.social_connections.healthy ?? 0}/{overview?.social_connections.total ?? 0} healthy</span>
+            <button disabled={actionBusy === "accounts-all"} type="button" onClick={() => void probeAll()}>
+              {actionBusy === "accounts-all" ? "Проверяю…" : "Проверить все"}
+            </button>
+          </div>
+        </header>
+        <div className={styles.connectionSummary}>
+          <div><span>Healthy</span><strong>{overview?.social_connections.healthy ?? 0}</strong></div>
+          <div><span>Degraded / unverified</span><strong>{(overview?.social_connections.degraded ?? 0) + (overview?.social_connections.unprobed ?? 0)}</strong></div>
+          <div><span>Critical</span><strong>{overview?.social_connections.critical ?? 0}</strong></div>
+          <div><span>Reconnect needed</span><strong>{overview?.social_connections.reconnect_required ?? 0}</strong></div>
+        </div>
+        <div className={styles.connectionList}>
+          {accountHealth.map((item) => (
+            <article className={styles.connectionCard} key={item.account_id}>
+              <div className={styles.connectionIdentity}>
+                <span className={styles.platform}>{item.platform}</span>
+                <strong>{item.account_name || `Account #${item.account_id}`}</strong>
+                <small>{item.destination || item.probe_method}</small>
+              </div>
+              <div className={styles.connectionMessage}>
+                <b className={styles[item.status]}>{item.status}</b>
+                <span>{item.message}</span>
+                <small>Проверено {date(item.checked_at)} · last success {date(item.last_success_at)}</small>
+              </div>
+              <div className={styles.connectionActions}>
+                {item.reconnect_required ? <a href="/accounts">Переподключить</a> : null}
+                <button disabled={actionBusy === `account-${item.account_id}`} type="button" onClick={() => void probe(item.account_id)}>
+                  {actionBusy === `account-${item.account_id}` ? "Проверяю…" : "Проверить"}
+                </button>
+              </div>
+            </article>
+          ))}
+          {!accountHealth.length ? (
+            <p className={styles.empty}>Probe worker ещё не сформировал состояние. Нажмите «Проверить» на странице подключений после добавления аккаунта или дождитесь фоновой проверки.</p>
+          ) : null}
+        </div>
+      </section>
 
       <section className={`${styles.panel} ${styles.alertPanel}`}>
         <header>

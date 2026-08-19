@@ -149,6 +149,7 @@ class HealthAlertApplication:
             "queue_lag": "отставание очереди",
             "stale_provider_processing": "зависшая обработка у платформы",
             "attempt_failure_rate": "высокая доля ошибок публикации",
+            "social_connection_health": "проблема подключения соцсети",
         }
         for reason in reasons[:8]:
             code = str(reason.get("code") or "unknown")

@@ -253,3 +253,12 @@ Delivery rules:
 - failed/no-recipient delivery is persisted and shown in Operations; it is not marked notified, so a later scan can deliver it.
 
 The alert lifecycle is stored in `operations_alert_state`, while opened/notified/resolved transitions are appended to immutable `operations_events`.
+
+
+## Account connection readiness (0.12)
+
+A dedicated `autoposter-account-health` worker checks social connections without publishing test content. TikTok uses the read-only user-info endpoint, Instagram Login uses the read-only account identity endpoint, and Telegram validates the system bot token through `getMe`. Stored credentials are refreshed first when supported and any refreshed secret is persisted through the encrypted account store.
+
+Probe results are workspace-scoped in `account_connection_health` and become part of the same Operations health model and alert fingerprint. Missing/rejected credentials are `critical`; transient provider failures and unsupported/unverified probe paths are `degraded`. VK is intentionally `degraded/probe_not_verified` rather than falsely reported healthy until a verified read-only provider probe is enabled.
+
+The Operations page exposes per-account status, last successful check and a manual read-only probe action. No health probe creates, edits or deletes remote content.

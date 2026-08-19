@@ -108,7 +108,26 @@ export type OperationsOverview = {
   reconciliation: { processing: number; stale_processing: number; unknown_outcomes: number };
   attempts_24h: { total: number; failed: number; failure_rate: number };
   analytics: { latest_snapshot_at: string | null; lag_seconds: number | null };
+  social_connections: { total: number; healthy: number; degraded: number; critical: number; unprobed: number; stale: number; reconnect_required: number };
   publishing: { latest_published_at: string | null; published_24h: number };
+};
+
+
+export type AccountHealth = {
+  workspace_id: number;
+  account_id: number;
+  account_name: string | null;
+  destination: string | null;
+  platform: string;
+  status: "healthy" | "degraded" | "critical" | string;
+  code: string;
+  message: string;
+  probe_method: string;
+  identity: Record<string, unknown>;
+  reconnect_required: boolean;
+  token_expires_at: string | null;
+  checked_at: string | null;
+  last_success_at: string | null;
 };
 
 export type OperationsAlertState = {
@@ -264,6 +283,9 @@ export function createPublication(
 }
 
 export function getOperationsOverview(): Promise<OperationsOverview> { return request("/operations/overview"); }
+export function listAccountHealth(): Promise<AccountHealth[]> { return request("/operations/account-health"); }
+export function probeWorkspaceAccounts(): Promise<AccountHealth[]> { return request("/operations/account-health/probe", { method: "POST" }); }
+export function probeAccount(accountId: number): Promise<AccountHealth> { return request(`/accounts/${accountId}/probe`, { method: "POST" }); }
 export function getOperationsAlertState(): Promise<OperationsAlertState | null> { return request("/operations/alert-state"); }
 export function listReconciliationItems(): Promise<ReconciliationItem[]> { return request("/operations/reconciliation"); }
 export function listOperationsEvents(limit = 50): Promise<OperationsEvent[]> { return request(`/operations/events?limit=${limit}`); }

@@ -63,6 +63,11 @@ class OperationsStore:
                 )
 
     def workspace_overview(self, *, workspace_id: int, now: datetime | None = None) -> dict[str, Any]:
+        # Keep standalone OperationsStore usage backwards-compatible: the account-health
+        # table is optional at construction time but must exist before aggregation.
+        from autoposter_bot.infrastructure.account_health_store import AccountHealthStore
+
+        AccountHealthStore(backend=self.backend, connect=self.connect).init_schema()
         now = self._aware(now or datetime.now(timezone.utc))
         cutoff = now - timedelta(hours=24)
         stale_processing_cutoff = now - timedelta(minutes=30)
@@ -154,6 +159,18 @@ class OperationsStore:
                 """,
                 (cutoff_db, workspace_id),
             ).fetchone()
+            account_health_rows = db.execute(
+                f"""
+                SELECT a.id AS account_id, h.status, h.code, h.checked_at, h.reconnect_required
+                FROM accounts a
+                JOIN workspaces w ON w.id = {ph}
+                LEFT JOIN workspace_accounts wa ON wa.account_id = a.id AND wa.workspace_id = w.id
+                LEFT JOIN account_connection_health h
+                  ON h.workspace_id = w.id AND h.account_id = a.id
+                WHERE a.owner_user_id = w.owner_user_id OR wa.workspace_id IS NOT NULL
+                """,
+                (workspace_id,),
+            ).fetchall()
 
         statuses = {str(row["status"]): int(row["count"]) for row in status_rows}
         due = dict(due) if due is not None else {}
@@ -188,6 +205,38 @@ class OperationsStore:
             if started <= stale_processing_cutoff:
                 stale_processing += 1
         due_count = int(due.get("count") or 0)
+        account_health_cutoff = now - timedelta(minutes=45)
+        account_total = len(account_health_rows)
+        account_critical = 0
+        account_degraded = 0
+        account_healthy = 0
+        account_unprobed = 0
+        account_stale = 0
+        account_reconnect_required = 0
+        for account_row in account_health_rows:
+            item = dict(account_row)
+            status = item.get("status")
+            if not status:
+                account_unprobed += 1
+                continue
+            if status == "critical":
+                account_critical += 1
+            elif status == "degraded":
+                account_degraded += 1
+            elif status == "healthy":
+                account_healthy += 1
+            if item.get("reconnect_required"):
+                account_reconnect_required += 1
+            checked_raw = item.get("checked_at")
+            if checked_raw:
+                try:
+                    if self._parse_datetime(checked_raw) <= account_health_cutoff:
+                        account_stale += 1
+                except (TypeError, ValueError):
+                    account_stale += 1
+            else:
+                account_stale += 1
+
         reasons: list[dict[str, Any]] = []
         if unknown:
             reasons.append({"code": "unknown_publish_outcome", "severity": "critical", "count": unknown})
@@ -197,6 +246,32 @@ class OperationsStore:
             reasons.append({"code": "queue_lag", "severity": "degraded", "value": queue_lag})
         if stale_processing:
             reasons.append({"code": "stale_provider_processing", "severity": "critical", "count": stale_processing})
+        if account_critical:
+            reasons.append({
+                "code": "social_connection_health",
+                "severity": "critical",
+                "count": account_critical,
+                "details": {
+                    "critical": account_critical,
+                    "degraded": account_degraded,
+                    "unprobed": account_unprobed,
+                    "stale": account_stale,
+                    "reconnect_required": account_reconnect_required,
+                },
+            })
+        elif account_degraded or account_unprobed or account_stale:
+            reasons.append({
+                "code": "social_connection_health",
+                "severity": "degraded",
+                "count": account_degraded + account_unprobed + account_stale,
+                "details": {
+                    "critical": account_critical,
+                    "degraded": account_degraded,
+                    "unprobed": account_unprobed,
+                    "stale": account_stale,
+                    "reconnect_required": account_reconnect_required,
+                },
+            })
         if total_attempts >= 5 and failure_rate >= 0.50:
             reasons.append({"code": "attempt_failure_rate", "severity": "critical", "value": round(failure_rate, 4)})
         elif total_attempts >= 5 and failure_rate >= 0.20:
@@ -232,6 +307,15 @@ class OperationsStore:
             "analytics": {
                 "latest_snapshot_at": latest_analytics.isoformat() if latest_analytics else None,
                 "lag_seconds": analytics_lag,
+            },
+            "social_connections": {
+                "total": account_total,
+                "healthy": account_healthy,
+                "degraded": account_degraded,
+                "critical": account_critical,
+                "unprobed": account_unprobed,
+                "stale": account_stale,
+                "reconnect_required": account_reconnect_required,
             },
             "publishing": {
                 "latest_published_at": latest_published.isoformat() if latest_published else None,

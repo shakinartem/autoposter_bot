@@ -6,6 +6,7 @@ from typing import Any
 
 from autoposter_bot.config import Settings
 from autoposter_bot.infrastructure.analytics_store import AnalyticsStore
+from autoposter_bot.infrastructure.account_health_store import AccountHealthStore
 from autoposter_bot.infrastructure.auth_store import AuthStore
 from autoposter_bot.infrastructure.content_store import SQLiteContentStore
 from autoposter_bot.infrastructure.credentials import CredentialCipher, SecureContentStore
@@ -33,6 +34,7 @@ class PersistenceRuntime:
     login_grants: LoginGrantStore
     invitations: InvitationStore
     analytics: AnalyticsStore
+    account_health: AccountHealthStore
     operations: OperationsStore
     health_alerts: HealthAlertStore
 
@@ -47,6 +49,7 @@ class PersistenceRuntime:
         self.login_grants.init_schema()
         self.invitations.init_schema()
         self.analytics.init_schema()
+        self.account_health.init_schema()
         self.operations.init_schema()
         self.health_alerts.init_schema()
 
@@ -93,6 +96,7 @@ def _runtime(
         ),
         invitations=InvitationStore(backend=backend, connect=connect),
         analytics=AnalyticsStore(backend=backend, connect=connect),
+        account_health=AccountHealthStore(backend=backend, connect=connect),
         operations=OperationsStore(backend=backend, connect=connect),
         health_alerts=HealthAlertStore(backend=backend, connect=connect),
     )

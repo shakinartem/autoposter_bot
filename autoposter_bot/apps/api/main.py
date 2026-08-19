@@ -8,8 +8,10 @@ from typing import Annotated, Any
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
+from autoposter_bot.application.account_health import AccountHealthApplication
 from autoposter_bot.application.content import ContentApplication
 from autoposter_bot.application.publishing import PublishingApplication
+from autoposter_bot.apps.api.account_health import build_account_health_router
 from autoposter_bot.apps.api.accounts import build_accounts_router
 from autoposter_bot.apps.api.analytics import build_analytics_router
 from autoposter_bot.apps.api.auth import build_auth_router
@@ -60,6 +62,14 @@ tiktok_oauth = TikTokOAuthProvider(settings)
 instagram_oauth = InstagramOAuthProvider()
 telegram_login = TelegramOIDCProvider(settings)
 credential_refresh = CredentialRefreshService(tiktok=tiktok_oauth, instagram=instagram_oauth)
+account_health_application = AccountHealthApplication(
+    account_health=persistence.account_health,
+    store_for_workspace=persistence.scoped,
+    credential_refresh=credential_refresh,
+    tiktok=tiktok_oauth,
+    instagram=instagram_oauth,
+    telegram_bot_token=settings.telegram_bot_token,
+)
 CurrentAuth = Annotated[AuthContext, Depends(get_auth_context)]
 
 
@@ -81,7 +91,7 @@ def _cors_origins() -> list[str]:
 
 app = FastAPI(
     title="Autoposter Content OS API",
-    version="0.11.0",
+    version="0.12.0",
     description=f"Workspace-scoped web/API backend for Autoposter ({persistence.backend}).",
     lifespan=lifespan,
 )
@@ -114,6 +124,12 @@ app.include_router(
     )
 )
 app.include_router(build_operations_router(operations=persistence.operations, health_alerts=persistence.health_alerts))
+app.include_router(
+    build_account_health_router(
+        application=account_health_application,
+        account_health=persistence.account_health,
+    )
+)
 app.include_router(
     build_media_router(
         media_storage,
