@@ -208,3 +208,35 @@
   .evidence { grid-template-columns: repeat(2, minmax(0,1fr)); }
   .remoteFields { grid-template-columns: 1fr; }
 }
+
+.alertDelivery {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.alertDelivery > div {
+  border: 1px solid #e6e8ec;
+  border-radius: 14px;
+  padding: 14px;
+  background: #fff;
+  display: grid;
+  gap: 6px;
+}
+
+.alertDelivery span {
+  color: #747b86;
+  font-size: 12px;
+}
+
+.alertDelivery strong {
+  font-size: 14px;
+}
+
+.goodText { color: #177245; }
+.badText { color: #b42318; }
+.deliveryError { margin: 12px 0 0; color: #b42318; font-size: 13px; }
+
+@media (max-width: 900px) {
+  .alertDelivery { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

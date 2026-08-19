@@ -237,3 +237,19 @@ Web: `http://localhost:3000`
 Once a tracking handle exists, generic publish retries are disabled. A later transport failure remains a reconciliation concern instead of creating a second remote publication. `processing` is therefore a first-class lifecycle state, not a synonym for `published`.
 
 Operational health is available at `/api/v1/operations/overview` for `admin+` workspace roles and in the web Operations page.
+
+
+## Health alert worker (0.11)
+
+`autoposter-health` scans workspace operational health independently from the API and publish workers.
+The default production threshold is `critical`; incident fingerprints include severity + reason codes but intentionally exclude changing counters, preventing one alert per poll.
+
+Delivery rules:
+
+- active `admin`/`owner` Telegram identities only;
+- new fingerprint -> immediate notification;
+- same incident -> reminder only after `AUTOPOSTER_HEALTH_ALERT_REMINDER_SECONDS`;
+- recovery below the configured threshold -> one resolved message when the incident was previously delivered;
+- failed/no-recipient delivery is persisted and shown in Operations; it is not marked notified, so a later scan can deliver it.
+
+The alert lifecycle is stored in `operations_alert_state`, while opened/notified/resolved transitions are appended to immutable `operations_events`.

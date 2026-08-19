@@ -10,6 +10,7 @@ from autoposter_bot.infrastructure.auth_store import AuthStore
 from autoposter_bot.infrastructure.content_store import SQLiteContentStore
 from autoposter_bot.infrastructure.credentials import CredentialCipher, SecureContentStore
 from autoposter_bot.infrastructure.identity_store import IdentityStore
+from autoposter_bot.infrastructure.health_alert_store import HealthAlertStore
 from autoposter_bot.infrastructure.invitation_store import InvitationStore
 from autoposter_bot.infrastructure.login_grant_store import LoginGrantStore
 from autoposter_bot.infrastructure.operations_store import OperationsStore
@@ -33,6 +34,7 @@ class PersistenceRuntime:
     invitations: InvitationStore
     analytics: AnalyticsStore
     operations: OperationsStore
+    health_alerts: HealthAlertStore
 
     def init_schema(self) -> None:
         self.store.init_schema()
@@ -46,6 +48,7 @@ class PersistenceRuntime:
         self.invitations.init_schema()
         self.analytics.init_schema()
         self.operations.init_schema()
+        self.health_alerts.init_schema()
 
     def scoped(self, workspace_id: int) -> SecureContentStore:
         if self.backend == "postgres":
@@ -91,6 +94,7 @@ def _runtime(
         invitations=InvitationStore(backend=backend, connect=connect),
         analytics=AnalyticsStore(backend=backend, connect=connect),
         operations=OperationsStore(backend=backend, connect=connect),
+        health_alerts=HealthAlertStore(backend=backend, connect=connect),
     )
 
 

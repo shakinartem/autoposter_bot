@@ -3,11 +3,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   getOperationsOverview,
+  getOperationsAlertState,
   listOperationsEvents,
   listReconciliationItems,
   resolveReconciliation,
   type OperationsEvent,
   type OperationsOverview,
+  type OperationsAlertState,
   type ReconciliationItem,
 } from "@/lib/api";
 import styles from "./operations.module.css";
@@ -48,6 +50,7 @@ function reasonLabel(code: string): string {
 
 export default function OperationsPage() {
   const [overview, setOverview] = useState<OperationsOverview | null>(null);
+  const [alertState, setAlertState] = useState<OperationsAlertState | null>(null);
   const [reconciliation, setReconciliation] = useState<ReconciliationItem[]>([]);
   const [events, setEvents] = useState<OperationsEvent[]>([]);
   const [notice, setNotice] = useState("Загружаю состояние системы…");
@@ -61,12 +64,14 @@ export default function OperationsPage() {
   const load = useCallback(async () => {
     setBusy(true);
     try {
-      const [overviewPayload, recoveryPayload, eventPayload] = await Promise.all([
+      const [overviewPayload, alertPayload, recoveryPayload, eventPayload] = await Promise.all([
         getOperationsOverview(),
+        getOperationsAlertState(),
         listReconciliationItems(),
         listOperationsEvents(30),
       ]);
       setOverview(overviewPayload);
+      setAlertState(alertPayload);
       setReconciliation(recoveryPayload);
       setEvents(eventPayload);
       setNotice(`Срез обновлён ${date(overviewPayload.generated_at)}`);
@@ -233,6 +238,23 @@ export default function OperationsPage() {
           </div>
         </section>
       </div>
+
+      <section className={`${styles.panel} ${styles.alertPanel}`}>
+        <header>
+          <div>
+            <p className={styles.eyebrow}>ALERT DELIVERY</p>
+            <h2>Telegram operational alerts</h2>
+          </div>
+          <span>{alertState?.resolved_at ? "resolved" : alertState ? "active" : "idle"}</span>
+        </header>
+        <div className={styles.alertDelivery}>
+          <div><span>Severity</span><strong>{alertState?.severity ?? "—"}</strong></div>
+          <div><span>First seen</span><strong>{date(alertState?.first_seen_at)}</strong></div>
+          <div><span>Last notified</span><strong>{date(alertState?.last_notified_at)}</strong></div>
+          <div><span>Delivery</span><strong className={alertState?.last_delivery_error ? styles.badText : styles.goodText}>{alertState?.last_delivery_error ? "Needs attention" : "OK / not required"}</strong></div>
+        </div>
+        {alertState?.last_delivery_error ? <p className={styles.deliveryError}>{alertState.last_delivery_error}</p> : null}
+      </section>
 
       <section className={`${styles.panel} ${styles.recoveryPanel}`}>
         <header>

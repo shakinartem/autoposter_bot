@@ -111,6 +111,18 @@ export type OperationsOverview = {
   publishing: { latest_published_at: string | null; published_24h: number };
 };
 
+export type OperationsAlertState = {
+  workspace_id: number;
+  fingerprint: string;
+  severity: string;
+  first_seen_at: string;
+  last_seen_at: string;
+  last_notified_at?: string | null;
+  resolved_at?: string | null;
+  last_delivery_error?: string | null;
+  details: Record<string, unknown>;
+};
+
 export type ReconciliationItem = {
   id: string;
   status: string;
@@ -252,6 +264,7 @@ export function createPublication(
 }
 
 export function getOperationsOverview(): Promise<OperationsOverview> { return request("/operations/overview"); }
+export function getOperationsAlertState(): Promise<OperationsAlertState | null> { return request("/operations/alert-state"); }
 export function listReconciliationItems(): Promise<ReconciliationItem[]> { return request("/operations/reconciliation"); }
 export function listOperationsEvents(limit = 50): Promise<OperationsEvent[]> { return request(`/operations/events?limit=${limit}`); }
 export function resolveReconciliation(

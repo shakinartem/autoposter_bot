@@ -72,6 +72,7 @@ Then open `https://$AUTOPOSTER_DOMAIN/login` and complete Telegram Web Login.
 - `publication-worker`: scheduled publishing + credential refresh + bounded retries + durable pre-network checkpoints.
 - `reconciliation-worker`: async provider status resolution for `processing`/trackable ambiguous publications.
 - `analytics-worker`: milestone performance snapshots; currently Instagram collector only.
+- `health-worker`: deduplicated critical workspace health alerts to active Telegram admin/owner recipients.
 - `postgres`: production persistence and queue locking.
 - `caddy`: TLS termination and minimal public routing.
 

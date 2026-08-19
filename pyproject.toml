@@ -1,6 +1,6 @@
 [project]
 name = "autoposter-bot"
-version = "0.10.0"
+version = "0.11.0"
 description = "Workspace-scoped content distribution platform with encrypted credentials, media storage and revocable user sessions"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -28,6 +28,7 @@ autoposter = "autoposter_bot.cli:main"
 autoposter-api = "autoposter_bot.apps.api.runner:main"
 autoposter-worker = "autoposter_bot.apps.worker.runner:main"
 autoposter-reconciler = "autoposter_bot.apps.reconciliation_worker.runner:main"
+autoposter-health = "autoposter_bot.apps.health_worker.runner:main"
 autoposter-workspace = "autoposter_bot.apps.workspace_cli:main"
 autoposter-session = "autoposter_bot.apps.session_cli:main"
 

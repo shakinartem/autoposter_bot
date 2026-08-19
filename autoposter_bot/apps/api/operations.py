@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from autoposter_bot.apps.api.authorization import require_minimum_role
 from autoposter_bot.apps.api.security import AuthContext, get_auth_context
 from autoposter_bot.infrastructure.operations_store import OperationsStore
+from autoposter_bot.infrastructure.health_alert_store import HealthAlertStore
 
 
 CurrentAuth = Annotated[AuthContext, Depends(get_auth_context)]
@@ -21,13 +22,18 @@ class ReconciliationResolveRequest(BaseModel):
     acknowledge_duplicate_risk: bool = False
 
 
-def build_operations_router(*, operations: OperationsStore) -> APIRouter:
+def build_operations_router(*, operations: OperationsStore, health_alerts: HealthAlertStore | None = None) -> APIRouter:
     router = APIRouter(prefix="/api/v1/operations", tags=["operations"])
 
     @router.get("/overview")
     def overview(auth: CurrentAuth) -> dict[str, Any]:
         require_minimum_role(auth.role, "admin")
         return operations.workspace_overview(workspace_id=auth.workspace_id)
+
+    @router.get("/alert-state")
+    def alert_state(auth: CurrentAuth) -> dict[str, Any] | None:
+        require_minimum_role(auth.role, "admin")
+        return health_alerts.get_state(auth.workspace_id) if health_alerts is not None else None
 
     @router.get("/reconciliation")
     def reconciliation_items(

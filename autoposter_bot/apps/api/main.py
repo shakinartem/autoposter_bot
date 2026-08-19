@@ -81,7 +81,7 @@ def _cors_origins() -> list[str]:
 
 app = FastAPI(
     title="Autoposter Content OS API",
-    version="0.10.0",
+    version="0.11.0",
     description=f"Workspace-scoped web/API backend for Autoposter ({persistence.backend}).",
     lifespan=lifespan,
 )
@@ -113,7 +113,7 @@ app.include_router(
         store_for_workspace=persistence.scoped,
     )
 )
-app.include_router(build_operations_router(operations=persistence.operations))
+app.include_router(build_operations_router(operations=persistence.operations, health_alerts=persistence.health_alerts))
 app.include_router(
     build_media_router(
         media_storage,
