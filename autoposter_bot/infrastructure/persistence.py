@@ -45,6 +45,7 @@ class PersistenceRuntime:
         self.login_grants.init_schema()
         self.invitations.init_schema()
         self.analytics.init_schema()
+        self.operations.init_schema()
 
     def scoped(self, workspace_id: int) -> SecureContentStore:
         if self.backend == "postgres":
