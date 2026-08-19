@@ -43,3 +43,6 @@ def test_auth_team_analytics_account_media_and_publish_routes_remain_mounted():
     assert "/api/v1/media" in paths
     assert "/api/v1/publications/{publication_id}/publish" in paths
     assert "/api/v1/operations/overview" in paths
+    assert "/api/v1/operations/reconciliation" in paths
+    assert "/api/v1/operations/reconciliation/{publication_id}/resolve" in paths
+    assert "/api/v1/operations/events" in paths
