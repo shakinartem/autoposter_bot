@@ -42,7 +42,9 @@ Platform variant остаётся синхронизирован с Master, по
 - Telegram OIDC public login;
 - revocable workspace user sessions;
 - RBAC `viewer / editor / admin / owner`;
-- live multi-workspace switching.
+- live multi-workspace switching;
+- Operations health dashboard with queue lag / failure-rate / stale-processing signals;
+- admin-only manual reconciliation queue with audited `confirm_published / mark_failed / retry` recovery actions.
 
 ## Authentication
 

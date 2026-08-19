@@ -40,6 +40,14 @@ Asynchronous provider outcomes
        -> processing | published(final external_post_id) | provider failed
 ```
 
+Operations / recovery
+  -> workspace health overview
+  -> reconciliation queue
+  -> admin manual resolution with immutable operations event
+  -> retry allowed only when no durable remote identity exists
+
+Health uses provider-processing start time rather than the last status poll, so repeated polling cannot hide a stuck remote publication.
+
 The browser never receives platform credentials or the workspace API key.
 
 ## Workspace security

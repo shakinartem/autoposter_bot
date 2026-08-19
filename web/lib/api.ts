@@ -101,13 +101,45 @@ export type Publication = {
 
 export type OperationsOverview = {
   health: "healthy" | "degraded" | "critical" | string;
+  health_reasons: Array<{ code: string; severity: "degraded" | "critical" | string; count?: number; value?: number }>;
   generated_at: string;
   publication_statuses: Record<string, number>;
   queue: { due_count: number; oldest_due_at: string | null; lag_seconds: number; retry_scheduled: number };
-  reconciliation: { processing: number; unknown_outcomes: number };
+  reconciliation: { processing: number; stale_processing: number; unknown_outcomes: number };
   attempts_24h: { total: number; failed: number; failure_rate: number };
   analytics: { latest_snapshot_at: string | null; lag_seconds: number | null };
   publishing: { latest_published_at: string | null; published_24h: number };
+};
+
+export type ReconciliationItem = {
+  id: string;
+  status: string;
+  platform: string;
+  destination: string | null;
+  content_title: string;
+  provider_tracking_id: string | null;
+  external_post_id: string | null;
+  external_url: string | null;
+  published_at: string | null;
+  attempt_count: number;
+  last_error_code: string | null;
+  last_error_message: string | null;
+  metadata: Record<string, unknown>;
+  scheduled_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  processing_started_at: string | null;
+  can_retry: boolean;
+  resolution_event_id?: string;
+};
+
+export type OperationsEvent = {
+  id: string;
+  actor_user_id: number | null;
+  event_type: string;
+  publication_id: string | null;
+  details: Record<string, unknown>;
+  created_at: string;
 };
 
 export type PublishResult = {
@@ -220,6 +252,23 @@ export function createPublication(
 }
 
 export function getOperationsOverview(): Promise<OperationsOverview> { return request("/operations/overview"); }
+export function listReconciliationItems(): Promise<ReconciliationItem[]> { return request("/operations/reconciliation"); }
+export function listOperationsEvents(limit = 50): Promise<OperationsEvent[]> { return request(`/operations/events?limit=${limit}`); }
+export function resolveReconciliation(
+  publicationId: string,
+  payload: {
+    action: "confirm_published" | "mark_failed" | "retry";
+    note: string;
+    external_post_id?: string | null;
+    external_url?: string | null;
+    acknowledge_duplicate_risk?: boolean;
+  },
+): Promise<ReconciliationItem> {
+  return request(`/operations/reconciliation/${encodeURIComponent(publicationId)}/resolve`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
 
 export function listPublications(status?: string): Promise<Publication[]> {
   const query = status ? `?status=${encodeURIComponent(status)}` : "";

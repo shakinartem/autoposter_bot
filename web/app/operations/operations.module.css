@@ -126,3 +126,85 @@
   .healthRow { align-items: flex-start; flex-direction: column; }
   .kpis { grid-template-columns: 1fr; }
 }
+
+.reasons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: -10px 0 18px;
+}
+.reasons article {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 12px;
+  border: 1px solid rgba(255,255,255,0.09);
+  border-radius: 999px;
+  background: rgba(255,255,255,0.035);
+  font-size: 12px;
+}
+.reasons article strong { font-weight: 700; }
+.reasons article span { opacity: 0.72; font-variant-numeric: tabular-nums; }
+
+.recoveryPanel, .eventsPanel { margin-top: 12px; }
+.recoveryList { display: grid; gap: 12px; }
+.recoveryCard {
+  padding: 20px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 16px;
+  background: rgba(0,0,0,0.18);
+}
+.recoveryHead { display: flex; justify-content: space-between; gap: 22px; }
+.recoveryHead h3 { margin: 7px 0 5px; font-size: 18px; }
+.recoveryHead p { margin: 0; max-width: 760px; color: rgba(255,255,255,0.48); font-size: 13px; line-height: 1.55; }
+.platform { color: #91f7c3; text-transform: uppercase; font-size: 10px; font-weight: 900; letter-spacing: 0.15em; }
+.stateStack { min-width: 130px; display: grid; justify-items: end; align-content: start; gap: 4px; }
+.stateStack b { text-transform: uppercase; font-size: 11px; letter-spacing: 0.11em; }
+.stateStack span { color: rgba(255,255,255,0.38); font-size: 11px; }
+
+.evidence { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 8px; margin: 18px 0; }
+.evidence div { min-width: 0; padding: 11px 12px; border-radius: 11px; background: rgba(255,255,255,0.035); }
+.evidence dt { color: rgba(255,255,255,0.38); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; }
+.evidence dd { overflow: hidden; margin: 5px 0 0; color: rgba(255,255,255,0.78); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+
+.recoveryForm { display: grid; gap: 10px; }
+.recoveryForm label { display: grid; gap: 6px; }
+.recoveryForm label > span { color: rgba(255,255,255,0.46); font-size: 11px; font-weight: 700; }
+.recoveryForm textarea, .recoveryForm input:not([type="checkbox"]) {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 10px;
+  outline: none;
+  background: rgba(0,0,0,0.22);
+  color: white;
+  font: inherit;
+}
+.recoveryForm textarea { min-height: 76px; resize: vertical; padding: 11px 12px; }
+.recoveryForm input:not([type="checkbox"]) { padding: 10px 11px; }
+.recoveryForm textarea:focus, .recoveryForm input:not([type="checkbox"]):focus { border-color: rgba(145,247,195,0.45); }
+.remoteFields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.riskCheck { display: flex !important; grid-template-columns: none; align-items: flex-start; gap: 9px !important; padding: 10px 12px; border-radius: 10px; background: rgba(255,143,143,0.07); }
+.riskCheck input { margin-top: 2px; }
+.riskCheck span { color: rgba(255,210,210,0.78) !important; line-height: 1.45; }
+.retryBlocked { margin: 0; padding: 10px 12px; border-radius: 10px; background: rgba(145,247,195,0.06); color: rgba(190,255,220,0.58); font-size: 11px; }
+
+.actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.actions button { padding: 10px 13px; border: 1px solid rgba(255,255,255,0.12); border-radius: 10px; background: rgba(255,255,255,0.055); color: white; font-weight: 750; cursor: pointer; }
+.actions button:hover:not(:disabled) { background: rgba(255,255,255,0.10); }
+.actions button:disabled { opacity: 0.35; cursor: not-allowed; }
+.actions .danger { border-color: rgba(255,143,143,0.22); color: #ffb2b2; }
+
+.eventList { display: grid; gap: 1px; overflow: hidden; border-radius: 12px; background: rgba(255,255,255,0.055); }
+.eventList article { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 13px 15px; background: #101317; }
+.eventList article div { min-width: 0; display: grid; gap: 3px; }
+.eventList strong { font-size: 13px; }
+.eventList span { overflow: hidden; color: rgba(255,255,255,0.36); font: 11px/1.3 monospace; text-overflow: ellipsis; white-space: nowrap; }
+.eventList time { color: rgba(255,255,255,0.42); font-size: 11px; white-space: nowrap; }
+
+@media (max-width: 760px) {
+  .recoveryHead { flex-direction: column; }
+  .stateStack { justify-items: start; }
+  .evidence { grid-template-columns: repeat(2, minmax(0,1fr)); }
+  .remoteFields { grid-template-columns: 1fr; }
+}
