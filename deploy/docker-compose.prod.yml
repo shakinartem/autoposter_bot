@@ -140,24 +140,7 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
-      health-worker:
-    build:
-      context: ..
-      dockerfile: Dockerfile
-    restart: unless-stopped
-    command: ["autoposter-health"]
-    env_file: ../.env
-    environment:
-      AUTOPOSTER_DATABASE_URL: postgresql://${POSTGRES_USER:-autoposter}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-autoposter}
-      AUTOPOSTER_WEB_URL: https://${AUTOPOSTER_DOMAIN}
-    depends_on:
-      postgres:
-        condition: service_healthy
-    volumes:
-      - app_data:/app/data
-    networks: [backend]
-
-  web:
+      web:
         condition: service_healthy
       api:
         condition: service_healthy
