@@ -69,7 +69,8 @@ Then open `https://$AUTOPOSTER_DOMAIN/login` and complete Telegram Web Login.
 
 - `api`: FastAPI, auth, workspace APIs, social connection callbacks.
 - `web`: Next.js user interface and BFF.
-- `publication-worker`: scheduled publishing + credential refresh + bounded retries.
+- `publication-worker`: scheduled publishing + credential refresh + bounded retries + durable pre-network checkpoints.
+- `reconciliation-worker`: async provider status resolution for `processing`/trackable ambiguous publications.
 - `analytics-worker`: milestone performance snapshots; currently Instagram collector only.
 - `postgres`: production persistence and queue locking.
 - `caddy`: TLS termination and minimal public routing.
@@ -88,6 +89,7 @@ backups. Losing the key ring makes encrypted social credentials unrecoverable.
 3. Start PostgreSQL + API and verify `/health`.
 4. Start web and verify Telegram login.
 5. Start publication worker and create a dry-run/test publication.
-6. Start analytics worker after at least one platform account is publishing with
-   durable remote IDs.
-7. Only then migrate existing legacy SQLite users/accounts into PostgreSQL.
+6. Start reconciliation worker before enabling async providers such as TikTok.
+7. Start analytics worker after at least one platform account is publishing with durable final remote IDs.
+8. Check `/api/v1/operations/overview` as an admin and verify queue lag / unknown outcomes are zero.
+9. Only then migrate existing legacy SQLite users/accounts into PostgreSQL.

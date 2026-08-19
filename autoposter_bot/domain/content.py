@@ -18,6 +18,7 @@ class PublicationStatus(StrEnum):
     SCHEDULED = "scheduled"
     QUEUED = "queued"
     PUBLISHING = "publishing"
+    PROCESSING = "processing"
     PUBLISHED = "published"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -76,6 +77,7 @@ class Publication:
     # and must never rewrite this value because schedule punctuality is product data.
     scheduled_at: datetime | None = None
     status: PublicationStatus = PublicationStatus.DRAFT
+    provider_tracking_id: str | None = None
     external_post_id: str | None = None
     external_url: str | None = None
     published_at: datetime | None = None

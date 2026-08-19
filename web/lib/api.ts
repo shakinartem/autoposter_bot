@@ -89,6 +89,7 @@ export type Publication = {
   destination: string | null;
   scheduled_at: string | null;
   status: string;
+  provider_tracking_id: string | null;
   external_post_id: string | null;
   external_url: string | null;
   published_at: string | null;
@@ -98,9 +99,21 @@ export type Publication = {
   metadata: Record<string, unknown>;
 };
 
+export type OperationsOverview = {
+  health: "healthy" | "degraded" | "critical" | string;
+  generated_at: string;
+  publication_statuses: Record<string, number>;
+  queue: { due_count: number; oldest_due_at: string | null; lag_seconds: number; retry_scheduled: number };
+  reconciliation: { processing: number; unknown_outcomes: number };
+  attempts_24h: { total: number; failed: number; failure_rate: number };
+  analytics: { latest_snapshot_at: string | null; lag_seconds: number | null };
+  publishing: { latest_published_at: string | null; published_24h: number };
+};
+
 export type PublishResult = {
   ok: boolean;
   status: string;
+  provider_tracking_id?: string | null;
   external_post_id?: string | null;
   external_url?: string | null;
   published_at?: string | null;
@@ -205,6 +218,8 @@ export function createPublication(
 ): Promise<Publication> {
   return request(`/variants/${variantId}/publications`, { method: "POST", body: JSON.stringify(payload) });
 }
+
+export function getOperationsOverview(): Promise<OperationsOverview> { return request("/operations/overview"); }
 
 export function listPublications(status?: string): Promise<Publication[]> {
   const query = status ? `?status=${encodeURIComponent(status)}` : "";

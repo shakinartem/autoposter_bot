@@ -30,7 +30,14 @@ Scheduled publications
   -> autoposter-worker
        -> PostgreSQL SKIP LOCKED claim (production)
        -> SQLite atomic claim (development)
+       -> durable pre-network publishing checkpoint
        -> same PublishingApplication
+
+Asynchronous provider outcomes
+  -> provider_tracking_id
+       -> autoposter-reconciler
+       -> provider status fetch
+       -> processing | published(final external_post_id) | provider failed
 ```
 
 The browser never receives platform credentials or the workspace API key.
@@ -117,6 +124,7 @@ Then both commands use PostgreSQL automatically:
 ```bash
 autoposter-api
 autoposter-worker
+autoposter-reconciler
 ```
 
 The PostgreSQL worker claims due publications with row locking and `SKIP LOCKED`, so multiple worker processes can consume different scheduled publications concurrently.
@@ -212,3 +220,12 @@ Web: `http://localhost:3000`
 5. Rate-limit-aware retries.
 6. Analytics ingestion and recommendation layer.
 7. Full migration of historical Content OS data if production history must be preserved.
+
+
+## Async publication reliability
+
+`provider_tracking_id` and final `external_post_id` are intentionally separate identities. Async providers such as TikTok may accept a publish job before the final public post exists. The worker persists the tracking handle as soon as the provider init response is received, before the upload completes.
+
+Once a tracking handle exists, generic publish retries are disabled. A later transport failure remains a reconciliation concern instead of creating a second remote publication. `processing` is therefore a first-class lifecycle state, not a synonym for `published`.
+
+Operational health is available at `/api/v1/operations/overview` for `admin+` workspace roles and in the web Operations page.

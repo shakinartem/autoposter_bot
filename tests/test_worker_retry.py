@@ -81,17 +81,23 @@ class FakePublishing:
         self.attempt_started_values: list[bool] = []
         self.pre_call_states: list[tuple[PublicationStatus, int]] = []
 
-    def publish(self, variant, publication, *, account_options, attempt_started=False):
+    def publish(self, variant, publication, *, account_options, attempt_started=False, progress_callback=None):
         self.calls += 1
         self.attempt_started_values.append(attempt_started)
         self.pre_call_states.append((publication.status, publication.attempt_count))
         if self.error is not None:
             raise self.error
         assert self.result is not None
+        if progress_callback is not None and self.result.provider_tracking_id:
+            progress_callback(self.result)
         if self.result.ok:
-            publication.status = PublicationStatus.PUBLISHED
-            publication.external_post_id = self.result.external_post_id
-            publication.published_at = self.result.published_at or datetime.now()
+            if self.result.status == "processing":
+                publication.status = PublicationStatus.PROCESSING
+                publication.provider_tracking_id = self.result.provider_tracking_id
+            else:
+                publication.status = PublicationStatus.PUBLISHED
+                publication.external_post_id = self.result.external_post_id
+                publication.published_at = self.result.published_at or datetime.now()
         else:
             publication.status = PublicationStatus.FAILED
             publication.last_error_code = self.result.error_code
@@ -209,3 +215,30 @@ def test_non_retryable_failure_stays_failed():
     assert stats["retried"] == 0
     assert queue.retry_at is None
     assert store.publication.metadata["last_retry_decision"]["reason"] == "non_retryable"
+
+
+def test_async_provider_acceptance_is_processing_not_published():
+    publication, variant, account = fixture()
+    publication.platform = "tiktok"
+    variant.platform = "tiktok"
+    account["platform"] = "tiktok"
+    store = FakeStore(publication, variant, account)
+    queue = FakeQueue(publication.id)
+    publishing = FakePublishing(
+        PublicationResult(
+            ok=True,
+            status="processing",
+            provider_tracking_id="v_pub_file~v2.123",
+        )
+    )
+    worker = PublicationWorker(store=store, queue=queue, publishing=publishing)
+
+    stats = worker.run_once(now=datetime(2026, 8, 18, 12, 5, 0))
+
+    assert stats["processing"] == 1
+    assert stats["published"] == 0
+    assert store.publication.status == PublicationStatus.PROCESSING
+    assert store.publication.provider_tracking_id == "v_pub_file~v2.123"
+    assert store.publication.published_at is None
+    assert (PublicationStatus.PROCESSING, 1) in store.saved_states
+    assert queue.cleared == 1

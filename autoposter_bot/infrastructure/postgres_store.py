@@ -224,14 +224,15 @@ class PostgresContentStore:
                 """
                 INSERT INTO publications_v2 (
                     id, variant_id, platform, account_id, destination,
-                    scheduled_at, status, external_post_id, external_url,
+                    scheduled_at, status, provider_tracking_id, external_post_id, external_url,
                     published_at, attempt_count, last_error_code,
                     last_error_message, metadata_json, created_at, updated_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT(id) DO UPDATE SET
                     destination = EXCLUDED.destination,
                     scheduled_at = EXCLUDED.scheduled_at,
                     status = EXCLUDED.status,
+                    provider_tracking_id = EXCLUDED.provider_tracking_id,
                     external_post_id = EXCLUDED.external_post_id,
                     external_url = EXCLUDED.external_url,
                     published_at = EXCLUDED.published_at,
@@ -249,6 +250,7 @@ class PostgresContentStore:
                     publication.destination,
                     publication.scheduled_at,
                     publication.status.value,
+                    publication.provider_tracking_id,
                     publication.external_post_id,
                     publication.external_url,
                     publication.published_at,
@@ -300,12 +302,13 @@ class PostgresContentStore:
                 """
                 INSERT INTO publication_attempts (
                     publication_id, attempt_number, status,
-                    external_post_id, error_code, error_message,
+                    external_post_id, provider_tracking_id, error_code, error_message,
                     retryable, raw_response_json, started_at, finished_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT(publication_id, attempt_number) DO UPDATE SET
                     status = EXCLUDED.status,
                     external_post_id = EXCLUDED.external_post_id,
+                    provider_tracking_id = EXCLUDED.provider_tracking_id,
                     error_code = EXCLUDED.error_code,
                     error_message = EXCLUDED.error_message,
                     retryable = EXCLUDED.retryable,
@@ -317,6 +320,7 @@ class PostgresContentStore:
                     publication.attempt_count,
                     result.status,
                     result.external_post_id,
+                    result.provider_tracking_id,
                     result.error_code,
                     result.error_message,
                     result.retryable,
@@ -403,6 +407,7 @@ class PostgresContentStore:
             destination=row["destination"],
             scheduled_at=row["scheduled_at"],
             status=PublicationStatus(row["status"]),
+            provider_tracking_id=row["provider_tracking_id"],
             external_post_id=row["external_post_id"],
             external_url=row["external_url"],
             published_at=row["published_at"],

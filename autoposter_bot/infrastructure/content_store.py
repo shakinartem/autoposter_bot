@@ -203,14 +203,15 @@ class SQLiteContentStore:
                 """
                 INSERT INTO publications_v2 (
                     id, variant_id, platform, account_id, destination,
-                    scheduled_at, status, external_post_id, external_url,
+                    scheduled_at, status, provider_tracking_id, external_post_id, external_url,
                     published_at, attempt_count, last_error_code,
                     last_error_message, metadata_json, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     destination = excluded.destination,
                     scheduled_at = excluded.scheduled_at,
                     status = excluded.status,
+                    provider_tracking_id = excluded.provider_tracking_id,
                     external_post_id = excluded.external_post_id,
                     external_url = excluded.external_url,
                     published_at = excluded.published_at,
@@ -228,6 +229,7 @@ class SQLiteContentStore:
                     publication.destination,
                     publication.scheduled_at.isoformat() if publication.scheduled_at else None,
                     publication.status.value,
+                    publication.provider_tracking_id,
                     publication.external_post_id,
                     publication.external_url,
                     publication.published_at.isoformat() if publication.published_at else None,
@@ -285,12 +287,13 @@ class SQLiteContentStore:
                 """
                 INSERT INTO publication_attempts (
                     publication_id, attempt_number, status,
-                    external_post_id, error_code, error_message,
+                    external_post_id, provider_tracking_id, error_code, error_message,
                     retryable, raw_response_json, started_at, finished_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(publication_id, attempt_number) DO UPDATE SET
                     status = excluded.status,
                     external_post_id = excluded.external_post_id,
+                    provider_tracking_id = excluded.provider_tracking_id,
                     error_code = excluded.error_code,
                     error_message = excluded.error_message,
                     retryable = excluded.retryable,
@@ -302,6 +305,7 @@ class SQLiteContentStore:
                     publication.attempt_count,
                     result.status,
                     result.external_post_id,
+                    result.provider_tracking_id,
                     result.error_code,
                     result.error_message,
                     int(result.retryable),
@@ -382,6 +386,7 @@ class SQLiteContentStore:
             destination=row["destination"],
             scheduled_at=(datetime.fromisoformat(row["scheduled_at"]) if row["scheduled_at"] else None),
             status=PublicationStatus(row["status"]),
+            provider_tracking_id=row["provider_tracking_id"],
             external_post_id=row["external_post_id"],
             external_url=row["external_url"],
             published_at=(datetime.fromisoformat(row["published_at"]) if row["published_at"] else None),

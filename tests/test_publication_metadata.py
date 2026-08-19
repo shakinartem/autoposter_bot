@@ -44,13 +44,16 @@ def test_instagram_legacy_result_recovers_remote_id():
     assert publication.external_post_id == "17895695668004550"
 
 
-def test_tiktok_legacy_result_recovers_publish_id():
+def test_tiktok_legacy_result_recovers_tracking_id_without_faking_final_post_id():
     result, publication = _publish(
         "tiktok",
         "TikTok publish initialized: v_pub_file~v2.12345 (privacy=SELF_ONLY)",
     )
-    assert result.external_post_id == "v_pub_file~v2.12345"
-    assert publication.external_post_id == "v_pub_file~v2.12345"
+    assert result.provider_tracking_id == "v_pub_file~v2.12345"
+    assert result.external_post_id is None
+    assert publication.provider_tracking_id == "v_pub_file~v2.12345"
+    assert publication.external_post_id is None
+    assert publication.status.value == "processing"
 
 
 def test_vk_legacy_result_recovers_post_id():

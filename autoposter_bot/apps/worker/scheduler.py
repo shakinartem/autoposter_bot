@@ -34,6 +34,7 @@ class PublicationWorker:
         stats = {
             "claimed": len(publication_ids),
             "published": 0,
+            "processing": 0,
             "retried": 0,
             "failed": 0,
             "deduplicated": 0,
@@ -140,15 +141,30 @@ class PublicationWorker:
             publication.metadata["publish_phase"] = "remote_call_started"
             self.store.save_publication(publication)
 
+            def persist_provider_progress(progress: PublicationResult) -> None:
+                if not progress.provider_tracking_id:
+                    return
+                publication.provider_tracking_id = progress.provider_tracking_id
+                if progress.status == "processing":
+                    publication.status = PublicationStatus.PROCESSING
+                publication.metadata["provider_tracking_recorded_at"] = datetime.now().isoformat()
+                publication.metadata["provider_tracking_phase"] = progress.raw_response.get("phase")
+                self.store.save_publication(publication)
+
             try:
                 result = self.publishing.publish(
                     variant,
                     publication,
                     account_options=account["options"],
                     attempt_started=True,
+                    progress_callback=persist_provider_progress,
                 )
             except Exception as exc:
-                publication.status = PublicationStatus.FAILED
+                publication.status = (
+                    PublicationStatus.PROCESSING
+                    if publication.provider_tracking_id
+                    else PublicationStatus.FAILED
+                )
                 publication.last_error_code = "unknown_publish_outcome"
                 publication.last_error_message = str(exc)
                 result = PublicationResult(
@@ -179,7 +195,19 @@ class PublicationWorker:
 
         if result.ok:
             self.queue.clear_retry(publication.id, now=now)
-            stats["published"] += 1
+            if result.status == "processing":
+                stats["processing"] += 1
+            else:
+                stats["published"] += 1
+            return
+
+        if publication.provider_tracking_id and publication.status == PublicationStatus.PROCESSING:
+            # Tracking evidence means the provider accepted an asynchronous job.
+            # Never convert a later transport error into a fresh publish retry.
+            publication.metadata["reconciliation_required"] = True
+            self.store.save_publication(publication)
+            self.queue.clear_retry(publication.id, now=now)
+            stats["processing"] += 1
             return
 
         decision = self.retry_policy.decide(

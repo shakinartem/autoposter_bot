@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 
 from autoposter_bot.domain.content import PlatformVariant, Publication
 
@@ -30,6 +30,7 @@ class PublicationResult:
     status: str
     external_post_id: str | None = None
     external_url: str | None = None
+    provider_tracking_id: str | None = None
     published_at: datetime | None = None
     error_code: str | None = None
     error_message: str | None = None
@@ -57,8 +58,23 @@ class PlatformAdapter(ABC):
         *,
         account_options: dict[str, Any],
         dry_run: bool = False,
+        progress_callback: Callable[[PublicationResult], None] | None = None,
     ) -> PublicationResult:
         raise NotImplementedError
+
+    def fetch_status(
+        self,
+        publication: Publication,
+        *,
+        account_options: dict[str, Any],
+    ) -> PublicationResult:
+        return PublicationResult(
+            ok=False,
+            status="unsupported",
+            provider_tracking_id=publication.provider_tracking_id,
+            error_code="status_not_supported",
+            error_message=f"{self.platform} adapter does not support status reconciliation",
+        )
 
     def update(
         self,

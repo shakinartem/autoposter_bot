@@ -84,6 +84,7 @@ class PublicationView(BaseModel):
     destination: str | None
     scheduled_at: datetime | None
     status: str
+    provider_tracking_id: str | None
     external_post_id: str | None
     external_url: str | None
     published_at: datetime | None
@@ -100,6 +101,7 @@ class PublishRequest(BaseModel):
 class PublishResultView(BaseModel):
     ok: bool
     status: str
+    provider_tracking_id: str | None = None
     external_post_id: str | None = None
     external_url: str | None = None
     published_at: datetime | None = None

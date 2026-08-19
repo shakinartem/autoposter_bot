@@ -47,6 +47,7 @@ class PostgresPublicationQueue:
                   AND status IN ('failed', 'queued')
                   AND published_at IS NULL
                   AND external_post_id IS NULL
+                  AND provider_tracking_id IS NULL
                 """,
                 (next_attempt_at, now, publication_id),
             )
@@ -80,6 +81,7 @@ class PostgresPublicationQueue:
                   AND updated_at < %s
                   AND published_at IS NULL
                   AND external_post_id IS NULL
+                  AND provider_tracking_id IS NULL
                 """,
                 (now, cutoff),
             )
@@ -96,6 +98,7 @@ class PostgresPublicationQueue:
                   AND updated_at < %s
                   AND published_at IS NULL
                   AND external_post_id IS NULL
+                  AND provider_tracking_id IS NULL
                 """,
                 (now, cutoff),
             )

@@ -132,15 +132,17 @@ Web загружает image/video через streaming BFF. Production може
 
 Scheduled workers используют PostgreSQL row locking для атомарного claim due publications. Это позволяет масштабировать workers горизонтально без выдачи одной публикации двум consumers одновременно.
 
-## Analytics foundation
+## Analytics + operations
 
-В PostgreSQL schema уже есть append-only `analytics_snapshots`, привязанные к `Publication`, и индекс по `publication_id + captured_at`.
+`analytics-worker` собирает append-only performance snapshots по milestone-окнам, а `/api/v1/operations/overview` даёт workspace-scoped operational health: queue lag, retries, provider processing, quarantined outcomes, attempt failure rate и analytics freshness.
 
-**Collector/analytics worker пока не реализованы в текущей ветке.** Следующий data-layer milestone должен дать dataset:
+Текущий data-loop:
 
 ```text
-Master -> Variant -> Platform -> Published At -> Performance snapshots
+Master -> Variant -> Publication -> Provider tracking -> Final post -> Performance snapshots
 ```
+
+Instagram уже имеет live collector. Для TikTok публикация после `init` остаётся в `processing`: отдельный reconciliation worker проверяет provider status по `publish_id` и только после подтверждения сохраняет final post identity.
 
 ## Legacy Telegram admin bot
 
@@ -170,17 +172,17 @@ API / worker / operator tools:
 ```bash
 autoposter-api
 autoposter-worker
+autoposter-reconciler
 autoposter-workspace --help
 autoposter-session --help
 ```
 
 ## Near-term roadmap
 
-1. invitation/onboarding UX для команд и дополнительных identity providers;
-2. posting-compatible VK connection flow;
-3. structured external post IDs/URLs для всех текущих publishers;
-4. rate-limit-aware retry/backoff + idempotency;
-5. analytics collectors + milestone performance snapshots;
-6. orphan media lifecycle cleanup;
-7. дополнительные native platforms, включая YouTube;
-8. recommendation layer на данных `content -> variant -> publication -> performance`.
+1. posting-compatible VK connection flow;
+2. analytics collectors для TikTok / VK / Telegram там, где provider API даёт метрики;
+3. webhook-driven reconciliation как дополнение к polling;
+4. orphan media lifecycle cleanup;
+5. audit/notification layer для operational incidents и team actions;
+6. дополнительные native platforms, включая YouTube;
+7. derived insights + recommendation layer на данных `content -> variant -> publication -> performance`.

@@ -68,6 +68,7 @@ class SQLitePublicationQueue:
                   AND status IN ('failed', 'queued')
                   AND published_at IS NULL
                   AND external_post_id IS NULL
+                  AND provider_tracking_id IS NULL
                 """,
                 (next_attempt_at.isoformat(), now.isoformat(), publication_id),
             )
@@ -108,6 +109,7 @@ class SQLitePublicationQueue:
                   AND updated_at < ?
                   AND published_at IS NULL
                   AND external_post_id IS NULL
+                  AND provider_tracking_id IS NULL
                 """,
                 (now.isoformat(), cutoff),
             )
@@ -128,6 +130,7 @@ class SQLitePublicationQueue:
                   AND updated_at < ?
                   AND published_at IS NULL
                   AND external_post_id IS NULL
+                  AND provider_tracking_id IS NULL
                 """,
                 (now.isoformat(), cutoff),
             )

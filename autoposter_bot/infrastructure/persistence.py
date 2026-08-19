@@ -12,9 +12,11 @@ from autoposter_bot.infrastructure.credentials import CredentialCipher, SecureCo
 from autoposter_bot.infrastructure.identity_store import IdentityStore
 from autoposter_bot.infrastructure.invitation_store import InvitationStore
 from autoposter_bot.infrastructure.login_grant_store import LoginGrantStore
+from autoposter_bot.infrastructure.operations_store import OperationsStore
 from autoposter_bot.infrastructure.postgres_queue import PostgresPublicationQueue
 from autoposter_bot.infrastructure.postgres_store import PostgresContentStore
 from autoposter_bot.infrastructure.publication_queue import SQLitePublicationQueue
+from autoposter_bot.infrastructure.publication_tracking_schema import init_publication_tracking_schema
 from autoposter_bot.infrastructure.retry_schema import init_retry_schema
 from autoposter_bot.infrastructure.workspace_schema import init_workspace_schema
 from autoposter_bot.infrastructure.workspace_store import WorkspaceContentStore
@@ -30,12 +32,14 @@ class PersistenceRuntime:
     login_grants: LoginGrantStore
     invitations: InvitationStore
     analytics: AnalyticsStore
+    operations: OperationsStore
 
     def init_schema(self) -> None:
         self.store.init_schema()
         if self.backend == "sqlite":
             init_workspace_schema(self.store.base)
         init_retry_schema(backend=self.backend, connect=self.store.base.connect)
+        init_publication_tracking_schema(backend=self.backend, connect=self.store.base.connect)
         self.auth.init_schema()
         self.identities.init_schema()
         self.login_grants.init_schema()
@@ -85,6 +89,7 @@ def _runtime(
         ),
         invitations=InvitationStore(backend=backend, connect=connect),
         analytics=AnalyticsStore(backend=backend, connect=connect),
+        operations=OperationsStore(backend=backend, connect=connect),
     )
 
 

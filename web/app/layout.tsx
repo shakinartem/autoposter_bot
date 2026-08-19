@@ -25,6 +25,8 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
               <Link href="/">Composer</Link>
               <Link href="/calendar">Calendar</Link>
               <Link href="/accounts">Accounts</Link>
+              <Link href="/team">Team</Link>
+              <Link href="/operations">Operations</Link>
             </nav>
             {sessionMode ? <SessionMenu /> : null}
           </header>

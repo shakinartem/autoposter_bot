@@ -18,6 +18,7 @@ from autoposter_bot.apps.api.invitations import build_invitations_router
 from autoposter_bot.apps.api.login import build_public_login_router
 from autoposter_bot.apps.api.media import build_media_router
 from autoposter_bot.apps.api.oauth import build_oauth_router
+from autoposter_bot.apps.api.operations import build_operations_router
 from autoposter_bot.apps.api.schemas import (
     AccountView,
     ContentCreate,
@@ -46,6 +47,7 @@ from autoposter_bot.integrations.credential_refresh import CredentialRefreshServ
 from autoposter_bot.integrations.instagram_oauth import InstagramOAuthProvider
 from autoposter_bot.integrations.telegram_oidc import TelegramOIDCProvider
 from autoposter_bot.integrations.tiktok_oauth import TikTokOAuthProvider
+from autoposter_bot.platforms.base import PublicationResult
 from autoposter_bot.platforms.factory import build_default_platform_registry
 
 
@@ -111,6 +113,7 @@ app.include_router(
         store_for_workspace=persistence.scoped,
     )
 )
+app.include_router(build_operations_router(operations=persistence.operations))
 app.include_router(
     build_media_router(
         media_storage,
@@ -357,7 +360,22 @@ def publish(publication_id: str, payload: PublishRequest, auth: CurrentAuth) -> 
     if account is None:
         raise HTTPException(status_code=409, detail="Publication social account no longer exists")
 
+    if not payload.dry_run:
+        if publication.external_post_id or publication.published_at or publication.status == PublicationStatus.PUBLISHED:
+            raise HTTPException(status_code=409, detail="Publication is already published")
+        if publication.status in {PublicationStatus.PUBLISHING, PublicationStatus.PROCESSING}:
+            raise HTTPException(status_code=409, detail="Publication is already in provider processing")
+        if publication.provider_tracking_id:
+            raise HTTPException(
+                status_code=409,
+                detail="Publication has provider tracking evidence and must be reconciled before republishing",
+            )
+
     try:
+        adapter = registry.get(publication.platform)
+        issues = adapter.validate(variant)
+        if issues:
+            raise HTTPException(status_code=422, detail=issues[0].message)
         refreshed_options, changed = credential_refresh.refresh_if_needed(
             publication.platform,
             account["options"],
@@ -369,20 +387,73 @@ def publish(publication_id: str, payload: PublishRequest, auth: CurrentAuth) -> 
             )
             if refreshed_account is not None:
                 account = refreshed_account
-        result = publishing_application.publish(
-            variant,
-            publication,
-            account_options=account["options"],
-            dry_run=payload.dry_run,
-        )
     except KeyError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    if not payload.dry_run:
+    if payload.dry_run:
+        result = publishing_application.publish(
+            variant,
+            publication,
+            account_options=account["options"],
+            dry_run=True,
+        )
+        return PublishResultView(**asdict(result))
+
+    # Match the scheduled worker's crash boundary: persist evidence that the
+    # remote call is about to start before any provider network request occurs.
+    started_at = datetime.now()
+    publication.attempt_count += 1
+    publication.status = PublicationStatus.PUBLISHING
+    publication.last_error_code = None
+    publication.last_error_message = None
+    publication.metadata["publish_started_at"] = started_at.isoformat()
+    publication.metadata["publish_phase"] = "remote_call_started"
+    publication.metadata["publish_source"] = "api"
+    scoped.save_publication(publication)
+
+    def persist_provider_progress(progress: PublicationResult) -> None:
+        if not progress.provider_tracking_id:
+            return
+        publication.provider_tracking_id = progress.provider_tracking_id
+        if progress.status == "processing":
+            publication.status = PublicationStatus.PROCESSING
+        publication.metadata["provider_tracking_recorded_at"] = datetime.now().isoformat()
+        publication.metadata["provider_tracking_phase"] = progress.raw_response.get("phase")
         scoped.save_publication(publication)
-        scoped.record_attempt(publication, result)
+
+    try:
+        result = publishing_application.publish(
+            variant,
+            publication,
+            account_options=account["options"],
+            attempt_started=True,
+            progress_callback=persist_provider_progress,
+        )
+    except Exception as exc:
+        publication.status = (
+            PublicationStatus.PROCESSING
+            if publication.provider_tracking_id
+            else PublicationStatus.FAILED
+        )
+        publication.last_error_code = "unknown_publish_outcome"
+        publication.last_error_message = str(exc)
+        result = PublicationResult(
+            ok=False,
+            status="failed",
+            provider_tracking_id=publication.provider_tracking_id,
+            error_code="unknown_publish_outcome",
+            error_message=str(exc),
+            retryable=False,
+            raw_response={"exception_type": type(exc).__name__},
+        )
+
+    publication.metadata["publish_phase"] = (
+        "remote_confirmed" if result.ok else "remote_failed_or_unknown"
+    )
+    scoped.save_publication(publication)
+    scoped.record_attempt(publication, result)
     return PublishResultView(**asdict(result))
 
 
@@ -468,6 +539,7 @@ def _publication_view(publication: Publication) -> PublicationView:
         destination=publication.destination,
         scheduled_at=publication.scheduled_at,
         status=publication.status.value,
+        provider_tracking_id=publication.provider_tracking_id,
         external_post_id=publication.external_post_id,
         external_url=publication.external_url,
         published_at=publication.published_at,
