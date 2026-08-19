@@ -81,7 +81,7 @@ def _cors_origins() -> list[str]:
 
 app = FastAPI(
     title="Autoposter Content OS API",
-    version="0.11.0",
+    version="0.10.0",
     description=f"Workspace-scoped web/API backend for Autoposter ({persistence.backend}).",
     lifespan=lifespan,
 )
@@ -420,6 +420,7 @@ def publish(publication_id: str, payload: PublishRequest, auth: CurrentAuth) -> 
         if progress.status == "processing":
             publication.status = PublicationStatus.PROCESSING
         publication.metadata["provider_tracking_recorded_at"] = datetime.now().isoformat()
+        publication.metadata.setdefault("processing_started_at", publication.metadata["provider_tracking_recorded_at"])
         publication.metadata["provider_tracking_phase"] = progress.raw_response.get("phase")
         scoped.save_publication(publication)
 
