@@ -4,8 +4,8 @@ import time
 from math import ceil
 from pathlib import Path
 from urllib.parse import urlparse
+from typing import Callable
 
-from autoposter_bot.cloudinary_client import CloudinaryClient
 from autoposter_bot.config import Settings
 from autoposter_bot.models import MediaItem, PostJob, Target
 from autoposter_bot.publishers.base import PublishResult, Publisher
@@ -15,12 +15,19 @@ class TikTokPublisher(Publisher):
     platform = "tiktok"
     INIT_URL = "https://open.tiktokapis.com/v2/post/publish/video/init/"
     CREATOR_INFO_URL = "https://open.tiktokapis.com/v2/post/publish/creator_info/query/"
+    STATUS_URL = "https://open.tiktokapis.com/v2/post/publish/status/fetch/"
 
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings
-        self.cloudinary = CloudinaryClient(settings) if settings else None
 
-    def publish(self, job: PostJob, target: Target, dry_run: bool = False) -> PublishResult:
+    def publish(
+        self,
+        job: PostJob,
+        target: Target,
+        dry_run: bool = False,
+        *,
+        progress_callback: Callable[[PublishResult], None] | None = None,
+    ) -> PublishResult:
         if job.content_type != "tiktok_video":
             return PublishResult(
                 self.platform,
@@ -55,10 +62,10 @@ class TikTokPublisher(Publisher):
         try:
             creator_info = self._query_creator_info(requests, access_token)
             post_mode = target.options.get("post_mode", "DIRECT_POST")
-            requested_privacy_level = (
+            requested_privacy_level = target.options.get("privacy_level") or (
                 self.settings.tiktok_default_privacy_level
                 if self.settings and self.settings.tiktok_default_privacy_level
-                else target.options.get("privacy_level", "SELF_ONLY")
+                else "SELF_ONLY"
             )
             privacy_level = self._resolve_privacy_level(requested_privacy_level, creator_info)
             disable_comment = self._resolve_interaction_flag(
@@ -84,9 +91,11 @@ class TikTokPublisher(Publisher):
                     disable_comment=disable_comment,
                     disable_duet=disable_duet,
                     disable_stitch=disable_stitch,
+                    progress_callback=progress_callback,
+                    destination=target.destination,
                 )
             else:
-                publish_id = self._publish_local_with_fallback(
+                publish_id = self._upload_local_file(
                     requests=requests,
                     access_token=access_token,
                     video_path=Path(media_item.source),
@@ -96,16 +105,148 @@ class TikTokPublisher(Publisher):
                     disable_comment=disable_comment,
                     disable_duet=disable_duet,
                     disable_stitch=disable_stitch,
-                    account_hint=target.account_name or target.destination or "tiktok",
+                    progress_callback=progress_callback,
+                    destination=target.destination,
                 )
             return PublishResult(
                 self.platform,
                 target.destination,
                 True,
                 f"TikTok publish initialized: {publish_id} (privacy={privacy_level})",
+                provider_tracking_id=publish_id,
+                raw_response={
+                    "publish_id": publish_id,
+                    "privacy_level": privacy_level,
+                    "post_mode": post_mode,
+                },
+                status="processing",
             )
         except Exception as exc:
             return PublishResult(self.platform, target.destination, False, str(exc))
+
+    def fetch_status(self, tracking_id: str, target: Target) -> PublishResult:
+        access_token = str(target.options.get("access_token") or "").strip()
+        if not access_token:
+            return PublishResult(
+                self.platform,
+                target.destination,
+                False,
+                "TikTok account access_token is not configured",
+                provider_tracking_id=tracking_id or None,
+                error_code="invalid_token",
+                retryable=False,
+                status="failed",
+            )
+        if not tracking_id:
+            return PublishResult(
+                self.platform,
+                target.destination,
+                False,
+                "TikTok publish_id is required for status reconciliation",
+                error_code="tracking_id_missing",
+                retryable=False,
+                status="failed",
+            )
+
+        import requests
+
+        try:
+            response = requests.post(
+                self.STATUS_URL,
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json; charset=UTF-8",
+                },
+                json={"publish_id": tracking_id},
+                timeout=60,
+            )
+        except requests.exceptions.RequestException as exc:
+            return PublishResult(
+                self.platform,
+                target.destination,
+                False,
+                f"TikTok status fetch network error: {exc}",
+                provider_tracking_id=tracking_id,
+                error_code="status_check_transient",
+                retryable=True,
+                status="status_check_failed",
+            )
+
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {"raw_text": response.text}
+        error = payload.get("error") if isinstance(payload, dict) else {}
+        error = error if isinstance(error, dict) else {}
+        error_code = str(error.get("code") or "")
+        if not response.ok or error_code not in {"", "ok"}:
+            transient = response.status_code == 429 or response.status_code >= 500 or error_code in {
+                "rate_limit_exceeded",
+                "internal_error",
+            }
+            return PublishResult(
+                self.platform,
+                target.destination,
+                False,
+                f"TikTok status fetch failed: {payload}",
+                provider_tracking_id=tracking_id,
+                raw_response=payload if isinstance(payload, dict) else {},
+                error_code="status_check_transient" if transient else (error_code or "status_check_failed"),
+                retryable=transient,
+                status="status_check_failed",
+            )
+
+        data = payload.get("data") or {}
+        status = str(data.get("status") or "").upper()
+        raw = payload if isinstance(payload, dict) else {}
+        if status in {"PROCESSING_UPLOAD", "PROCESSING_DOWNLOAD", "SEND_TO_USER_INBOX"}:
+            return PublishResult(
+                self.platform,
+                target.destination,
+                True,
+                f"TikTok publish is still processing: {status}",
+                provider_tracking_id=tracking_id,
+                raw_response=raw,
+                status="processing",
+            )
+        if status == "PUBLISH_COMPLETE":
+            public_ids = data.get("publicaly_available_post_id") or []
+            external_post_id = str(public_ids[0]) if public_ids else None
+            return PublishResult(
+                self.platform,
+                target.destination,
+                True,
+                "TikTok publish completed",
+                external_post_id=external_post_id,
+                provider_tracking_id=tracking_id,
+                raw_response=raw,
+                status="published",
+            )
+        if status == "FAILED":
+            fail_reason = str(data.get("fail_reason") or "publish_failed")
+            retryable_publish = fail_reason in {"internal", "video_pull_failed", "photo_pull_failed"}
+            return PublishResult(
+                self.platform,
+                target.destination,
+                False,
+                f"TikTok publish failed: {fail_reason}",
+                provider_tracking_id=tracking_id,
+                raw_response=raw,
+                error_code=f"tiktok_{fail_reason}",
+                retryable=retryable_publish,
+                status="failed",
+            )
+        return PublishResult(
+            self.platform,
+            target.destination,
+            False,
+            f"TikTok returned unknown publish status: {status or 'empty'}",
+            provider_tracking_id=tracking_id,
+            raw_response=raw,
+            error_code="status_unknown",
+            retryable=True,
+            status="status_check_failed",
+        )
 
     def _query_creator_info(self, requests, access_token: str) -> dict:
         try:
@@ -165,6 +306,8 @@ class TikTokPublisher(Publisher):
         disable_comment: str,
         disable_duet: str,
         disable_stitch: str,
+        progress_callback: Callable[[PublishResult], None] | None = None,
+        destination: str | None = None,
     ) -> str:
         response = self._post_init(
             requests=requests,
@@ -188,7 +331,17 @@ class TikTokPublisher(Publisher):
         publish_id = data.get("data", {}).get("publish_id")
         if not publish_id:
             raise RuntimeError(f"TikTok init failed: {data}")
-        return publish_id
+        if progress_callback is not None:
+            progress_callback(PublishResult(
+                self.platform,
+                destination,
+                True,
+                f"TikTok publish accepted for processing: {publish_id}",
+                provider_tracking_id=str(publish_id),
+                raw_response={"publish_id": str(publish_id), "phase": "init_accepted"},
+                status="processing",
+            ))
+        return str(publish_id)
 
     def _upload_local_file(
         self,
@@ -201,6 +354,8 @@ class TikTokPublisher(Publisher):
         disable_comment: str,
         disable_duet: str,
         disable_stitch: str,
+        progress_callback: Callable[[PublishResult], None] | None = None,
+        destination: str | None = None,
     ) -> str:
         file_size = video_path.stat().st_size
         init_response = self._post_init(
@@ -228,6 +383,16 @@ class TikTokPublisher(Publisher):
         publish_id = init_data.get("data", {}).get("publish_id")
         if not upload_url or not publish_id:
             raise RuntimeError(f"TikTok upload init failed: {init_data}")
+        if progress_callback is not None:
+            progress_callback(PublishResult(
+                self.platform,
+                destination,
+                True,
+                f"TikTok upload init accepted: {publish_id}",
+                provider_tracking_id=str(publish_id),
+                raw_response={"publish_id": str(publish_id), "phase": "init_accepted"},
+                status="processing",
+            ))
         upload_host = urlparse(upload_url).netloc
         print(f"[tiktok] upload host: {upload_host}")
 
@@ -241,62 +406,9 @@ class TikTokPublisher(Publisher):
             raise RuntimeError(f"TikTok upload failed: {upload_response.status_code} {upload_response.text}")
         return publish_id
 
-    def _publish_local_with_fallback(
-        self,
-        requests,
-        access_token: str,
-        video_path: Path,
-        title: str,
-        post_mode: str,
-        privacy_level: str,
-        disable_comment: str,
-        disable_duet: str,
-        disable_stitch: str,
-        account_hint: str,
-    ) -> str:
-        try:
-            return self._upload_local_file(
-                requests=requests,
-                access_token=access_token,
-                video_path=video_path,
-                title=title,
-                post_mode=post_mode,
-                privacy_level=privacy_level,
-                disable_comment=disable_comment,
-                disable_duet=disable_duet,
-                disable_stitch=disable_stitch,
-            )
-        except Exception as local_exc:
-            remote_url = self._upload_to_cloudinary(video_path, account_hint)
-            if not remote_url:
-                raise RuntimeError(f"TikTok local upload failed and no Cloudinary fallback is available: {local_exc}") from local_exc
-            try:
-                return self._publish_from_url(
-                    requests=requests,
-                    access_token=access_token,
-                    video_url=remote_url,
-                    title=title,
-                    post_mode=post_mode,
-                    privacy_level=privacy_level,
-                    disable_comment=disable_comment,
-                    disable_duet=disable_duet,
-                    disable_stitch=disable_stitch,
-                )
-            except Exception as remote_exc:
-                raise RuntimeError(
-                    "TikTok local upload failed, then Cloudinary URL publish failed. "
-                    f"Local error: {local_exc}. URL error: {remote_exc}"
-                ) from remote_exc
-
-    def _upload_to_cloudinary(self, video_path: Path, account_hint: str) -> str | None:
-        if not self.cloudinary or not self.cloudinary.is_configured():
-            return None
-        safe_hint = "".join(ch if ch.isalnum() else "-" for ch in account_hint).strip("-") or "tiktok"
-        return self.cloudinary.upload_media(
-            source=str(video_path),
-            media_type="video",
-            public_id_prefix=f"tiktok-{safe_hint}",
-        )
+    # Do not automatically create a second TikTok publish after an ambiguous
+    # FILE_UPLOAD failure. Once init returned a publish_id the provider may have
+    # accepted the first publication, so fallback-by-republishing can duplicate it.
 
     def _post_init(self, requests, access_token: str, payload: dict):
         try:

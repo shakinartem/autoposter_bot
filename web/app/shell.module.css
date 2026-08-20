@@ -1,0 +1,8 @@
+.shell { min-height: 100vh; }
+.header { position: sticky; top: 0; z-index: 50; display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 14px 28px; border-bottom: 1px solid rgba(255,255,255,.08); background: rgba(9,12,18,.86); backdrop-filter: blur(18px); }
+.brand { color: #fff; font-weight: 800; letter-spacing: -.03em; text-decoration: none; }
+.brand span { color: #91a7ff; }
+.nav { display: flex; align-items: center; gap: 8px; }
+.nav a { padding: 9px 12px; border-radius: 10px; color: #aeb8ca; text-decoration: none; font-size: 14px; font-weight: 650; }
+.nav a:hover { color: #fff; background: rgba(255,255,255,.07); }
+@media (max-width: 640px) { .header { padding: 12px 16px; } .nav a { padding: 8px; font-size: 13px; } }

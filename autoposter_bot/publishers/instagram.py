@@ -56,6 +56,7 @@ class InstagramPublisher(Publisher):
         ig_user_id = target.options["ig_user_id"]
         auth = self._build_auth(flow, access_token)
 
+        creation_id: str | None = None
         try:
             creation_id = self._create_container(
                 requests=requests,
@@ -66,6 +67,7 @@ class InstagramPublisher(Publisher):
                 caption=job.text,
                 media_items=media_items,
                 flow=flow,
+                options=target.options,
             )
             if job.content_type != "instagram_feed_image":
                 self._wait_until_finished(requests, base_url, creation_id, auth)
@@ -75,9 +77,22 @@ class InstagramPublisher(Publisher):
                 target.destination,
                 True,
                 f"Instagram publish succeeded ({flow}): {publish_id}",
+                external_post_id=str(publish_id),
+                raw_response={
+                    "creation_id": creation_id,
+                    "publish_id": publish_id,
+                    "flow": flow,
+                    "content_type": job.content_type,
+                },
             )
         except Exception as exc:
-            return PublishResult(self.platform, target.destination, False, str(exc))
+            return PublishResult(
+                self.platform,
+                target.destination,
+                False,
+                str(exc),
+                raw_response={"creation_id": creation_id, "flow": flow},
+            )
 
     def _resolve_flow(self, options: dict[str, Any], access_token: str) -> str:
         configured_flow = (options.get("api_flow") or options.get("auth_flow") or "").strip().lower()
@@ -141,16 +156,18 @@ class InstagramPublisher(Publisher):
         caption: str,
         media_items: list[MediaItem],
         flow: str,
+        options: dict[str, Any],
     ) -> str:
         if content_type == "instagram_feed_image":
             payload = {"image_url": media_items[0].source, "caption": caption}
             return self._post_media(requests, base_url, ig_user_id, auth, payload, flow)
         if content_type == "instagram_video":
+            share_to_feed = bool(options.get("share_to_feed", True))
             payload = {
                 "media_type": "REELS",
                 "video_url": media_items[0].source,
                 "caption": caption,
-                "share_to_feed": "true",
+                "share_to_feed": "true" if share_to_feed else "false",
             }
             return self._post_media(requests, base_url, ig_user_id, auth, payload, flow)
         if content_type == "instagram_story_image":

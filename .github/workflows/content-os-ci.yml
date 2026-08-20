@@ -1,0 +1,86 @@
+name: Content OS CI
+
+on:
+  push:
+    branches:
+      - content-os-foundation
+  pull_request:
+    branches:
+      - product-platform
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: autoposter_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d autoposter_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      AUTOPOSTER_TEST_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/autoposter_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Compile Python package
+        run: python -m compileall autoposter_bot
+      - name: Run tests
+        shell: bash
+        run: |
+          set +e
+          pytest -vv -x --tb=long > /tmp/pytest.log 2>&1
+          status=$?
+          cat /tmp/pytest.log
+          if [ $status -ne 0 ]; then
+            python - <<'PY'
+          from pathlib import Path
+          text = Path('/tmp/pytest.log').read_text(errors='replace')
+          markers = [text.rfind('\n=================================== FAILURES ==================================='), text.rfind('\n==================================== ERRORS ====================================')]
+          start = max(markers)
+          if start < 0:
+              start = max(0, len(text) - 12000)
+          failure = text[start:]
+          lines = failure.splitlines()[-120:]
+          chunks = []
+          for i in range(0, len(lines), 12):
+              chunk = '\n'.join(lines[i:i+12])
+              if chunk.strip():
+                  chunks.append(chunk)
+          for chunk in chunks[-10:]:
+              safe = chunk.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+              print(f'::error title=pytest failure::{safe}')
+          PY
+            exit $status
+          fi
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Install web dependencies
+        run: npm install
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Build web app
+        run: npm run build

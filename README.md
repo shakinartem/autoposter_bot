@@ -1,19 +1,167 @@
-# Autoposter Bot
+# Autoposter — Content Distribution OS
 
-Локальный Python-бот для автопостинга в несколько соцсетей с базой аккаунтов, расписанием, Telegram-админкой, Cloudinary для Instagram-медиа и контролем срока жизни токенов VK/Instagram.
+Autoposter развивается из Telegram-first бота в workspace-scoped web/API платформу дистрибуции контента. Legacy Telegram admin bot остаётся операционной поверхностью, но новая архитектура строится вокруг FastAPI, Next.js, platform variants, encrypted social credentials и scheduled workers.
 
-## Что умеет
+## Фактический scope текущей ветки
 
-- `Telegram`: текст, фото, видео, альбомы
-- `VK`: текст, фото, видео на стену
-- `Instagram`: фото-пост, видео, карусель, stories через Graph API
-- `TikTok`: видео через Content Posting API
-- `Cloudinary`: загрузка локальных фото и видео с получением публичного URL для Instagram
-- `SQLite`: аккаунты, задания, медиа и расписание
-- `Telegram admin bot`: добавление аккаунтов в БД, тестовые публикации и обновление токенов
-- `Token warning`: напоминание по VK за 1 час и по Instagram за 24 часа до истечения
+Production registry сейчас содержит четыре площадки:
 
-## Установка
+- `Telegram`: текст, фото, видео, альбомы;
+- `VK`: текст, фото, видео на стену;
+- `Instagram`: feed image, video/Reels, carousel, Stories;
+- `TikTok`: video publishing/draft flow.
+
+`YouTube` и следующие платформы — roadmap, а не готовая часть текущего registry.
+
+## Content model
+
+```text
+ContentItem (Master)
+  -> PlatformVariant (platform-native версия)
+    -> Publication (account + destination + schedule + lifecycle)
+      -> PublicationAttempt
+```
+
+Platform variant остаётся синхронизирован с Master, пока пользователь не делает platform-specific override. После override вариант живёт независимо.
+
+## Архитектура
+
+- FastAPI backend;
+- Next.js Composer / Calendar / Social Connections;
+- SQLite как development/legacy bridge;
+- PostgreSQL как production persistence;
+- PostgreSQL scheduled queue;
+- workspace isolation;
+- encrypted social credentials с MultiFernet rotation;
+- private local/S3-compatible media storage;
+- streaming media upload через Next.js BFF;
+- platform-aware media materialization;
+- TikTok OAuth;
+- Instagram Login OAuth;
+- refresh credentials перед direct/scheduled publish;
+- Telegram OIDC public login;
+- revocable workspace user sessions;
+- RBAC `viewer / editor / admin / owner`;
+- live multi-workspace switching;
+- Operations health dashboard with queue lag / failure-rate / stale-processing signals;
+- admin-only manual reconciliation queue with audited `confirm_published / mark_failed / retry` recovery actions.
+
+## Authentication
+
+API поддерживает два явных режима.
+
+### Service mode
+
+Для внутренних server-side callers используется workspace API key:
+
+```env
+AUTOPOSTER_WEB_AUTH_MODE=service
+AUTOPOSTER_API_KEY=replace-with-long-workspace-key
+AUTOPOSTER_API_KEYS_JSON={"replace-with-long-workspace-key":1}
+```
+
+Ключ остаётся только на сервере Next.js и не попадает в browser JavaScript.
+
+### Session mode
+
+Для пользовательского web-доступа используются opaque revocable sessions. Raw session token **не хранится в БД** — сохраняется только SHA-256 hash.
+
+```env
+AUTOPOSTER_WEB_AUTH_MODE=session
+```
+
+В этом режиме BFF использует только HttpOnly cookie `autoposter_session` и не делает fallback на service API key.
+
+Роли workspace:
+
+- `viewer` — чтение контента, календаря, статусов;
+- `editor` — создание/редактирование контента, media upload, schedule/publish;
+- `admin` — editor permissions + social account/OAuth management + member management;
+- `owner` — управление административным доступом;
+- `service` — internal server credential, не пользовательская роль.
+
+### Telegram Web Login
+
+Публичный вход использует Telegram OIDC Authorization Code Flow с PKCE.
+
+Поток:
+
+```text
+/login
+  -> Next.js /auth/telegram
+  -> Telegram OIDC
+  -> FastAPI /auth/telegram/callback
+  -> verified Telegram identity
+  -> existing user or new user + personal workspace
+  -> one-time apg_ login grant
+  -> Next.js /auth/complete
+  -> revocable aps_ session in HttpOnly cookie
+```
+
+Долгоживущий `aps_` token не попадает в URL, React state, browser history или referrer. Callback выдаёт только короткоживущий одноразовый `apg_` grant, в БД хранится только его hash.
+
+Пользователь с доступом к нескольким workspace переключает активный workspace без перевыпуска session token. Logout сначала отзывает backend session, затем удаляет cookie.
+
+### Operator session CLI
+
+Операторский bridge остаётся для внутренних сценариев:
+
+```bash
+autoposter-session members --workspace-id 1
+autoposter-session set-role --workspace-id 1 --user-id 2 --role editor
+autoposter-session issue --workspace-id 1 --user-id 2 --days 30
+autoposter-session revoke 'aps_...'
+```
+
+## Social Connections
+
+Manual encrypted connection configuration поддерживается для Telegram, VK, Instagram и TikTok.
+
+One-click OAuth подключён для:
+
+- TikTok;
+- Instagram Login.
+
+OAuth state шифруется, ограничен по времени и привязан к workspace + provider. Начать OAuth может только `admin+`; callback остаётся provider-facing endpoint и проверяет encrypted state.
+
+VK пока сохраняет manual access-token fallback. VK ID flow стоит включать как основной только после проверки, что выбранный token type совместим с используемыми posting/media API.
+
+## Media
+
+Web загружает image/video через streaming BFF. Production может хранить draft media в private S3-compatible storage. Площадка получает либо временный presigned URL, либо временный локальный файл — в зависимости от требований publisher.
+
+## PostgreSQL queue
+
+Scheduled workers используют PostgreSQL row locking для атомарного claim due publications. Это позволяет масштабировать workers горизонтально без выдачи одной публикации двум consumers одновременно.
+
+## Analytics + operations
+
+`analytics-worker` собирает append-only performance snapshots по milestone-окнам, а `/api/v1/operations/overview` даёт workspace-scoped operational health: queue lag, retries, provider processing, quarantined outcomes, attempt failure rate и analytics freshness.
+
+Текущий data-loop:
+
+```text
+Master -> Variant -> Publication -> Provider tracking -> Final post -> Performance snapshots
+```
+
+Instagram уже имеет live collector. Для TikTok публикация после `init` остаётся в `processing`: отдельный reconciliation worker проверяет provider status по `publish_id` и только после подтверждения сохраняет final post identity.
+
+## Legacy Telegram admin bot
+
+Legacy команды продолжают поддерживать операционную работу:
+
+- `/whoami`
+- `/accounts`
+- `/delete_account <id>`
+- `/vk_token_status`
+- `/set_vk_token <token> [expires_at_iso]`
+- `/instagram_token_status`
+- `/set_instagram_token <token> [expires_at_iso]`
+- `/test_text`
+- `/test_photo`
+- `/test_video`
+
+## Базовая установка
 
 ```powershell
 py -m venv .venv
@@ -21,98 +169,24 @@ py -m venv .venv
 py -m pip install -e .
 ```
 
-## Что заполнить в `.env`
+API / worker / operator tools:
 
-Минимум:
-
-- `TELEGRAM_BOT_TOKEN`
-- `VK_TOKEN`
-- `INSTAGRAM_IG_USER_ID`
-- `INSTAGRAM_ACCESS_TOKEN`
-- `TIKTOK_ACCESS_TOKEN`
-
-Для Telegram-админки:
-
-- `TELEGRAM_ADMIN_USER_IDS`
-- `TOKEN_WARNING_CHAT_ID` или `TELEGRAM_DEFAULT_DESTINATION`
-
-Для Cloudinary:
-
-- `CLOUDINARY_CLOUD_NAME`
-- `CLOUDINARY_API_KEY`
-- `CLOUDINARY_API_SECRET`
-- `CLOUDINARY_FOLDER`
-
-Для VK OAuth-ссылки и напоминаний:
-
-- `VK_TOKEN_LIFETIME_SECONDS`
-- `VK_CLIENT_ID`
-- `VK_REDIRECT_URI`
-- `VK_SCOPE`
-
-Для Instagram OAuth-ссылки и напоминаний:
-
-- `INSTAGRAM_TOKEN_LIFETIME_SECONDS`
-- `INSTAGRAM_APP_ID`
-- `INSTAGRAM_REDIRECT_URI`
-- `INSTAGRAM_SCOPE`
-
-## Как запустить
-
-```powershell
-autoposter init-db
-autoposter admin-bot
+```bash
+autoposter-api
+autoposter-worker
+autoposter-reconciler
+autoposter-health
+autoposter-account-health
+autoposter-workspace --help
+autoposter-session --help
 ```
 
-## Telegram-админка
+## Near-term roadmap
 
-Напишите боту:
-
-- `/whoami` — покажет ваш Telegram `user id`
-- `/help` — список команд
-- `/accounts` — список аккаунтов в БД
-- `/delete_account <id>` — удалить аккаунт из БД
-- `/vk_token_status` — статус VK токена
-- `/set_vk_token <token> [expires_at_iso]` — обновить `VK_TOKEN`; если дата не указана, бот посчитает её от времени сообщения + `VK_TOKEN_LIFETIME_SECONDS`
-- `/instagram_token_status` — статус Instagram токена
-- `/set_instagram_token <token> [expires_at_iso]` — обновить `INSTAGRAM_ACCESS_TOKEN`; если дата не указана, бот посчитает её от времени сообщения + `INSTAGRAM_TOKEN_LIFETIME_SECONDS`
-
-### Примеры
-
-```text
-/set_vk_token vk1.a.your_token
-/set_vk_token vk1.a.your_token 2026-04-18T12:00:00
-/vk_token_status
-
-/set_instagram_token EA...
-/set_instagram_token EA... 2026-06-16T12:00:00
-/instagram_token_status
-```
-
-### Тестовые публикации
-
-```text
-/test_text 2 Привет, это тест
-/test_photo 2 C:\media\photo.jpg
-/test_photo 2 C:\media\photo.jpg Подпись
-/test_video 3 C:\media\video.mp4
-```
-
-Для `Instagram`:
-
-- если передаёте локальный путь, бот сам загружает файл в `Cloudinary`
-- если передаёте `https://...`, бот использует URL напрямую
-
-## Напоминания по токенам
-
-- `VK`: бот проверяет `VK_TOKEN_EXPIRES_AT` раз в минуту и присылает предупреждение за `1 час`
-- `Instagram`: бот проверяет `INSTAGRAM_TOKEN_EXPIRES_AT` раз в минуту и присылает предупреждение за `24 часа`
-- в предупреждении приходит готовая OAuth-ссылка
-- предупреждение отправляется один раз на каждую дату истечения
-
-## Важные требования
-
-- `Telegram`: бот должен быть админом канала
-- `VK`: токен должен иметь права на стену и медиа
-- `Instagram`: нужен Business/Creator аккаунт и Graph API access token
-- `TikTok`: нужен валидный access token и права на публикацию видео
+1. posting-compatible VK connection flow + verified read-only VK health probe;
+2. analytics collectors для TikTok / VK / Telegram там, где provider API даёт метрики;
+3. webhook-driven reconciliation как дополнение к polling;
+4. orphan media lifecycle cleanup;
+5. расширение account-health remediation и audit для team actions;
+6. дополнительные native platforms, включая YouTube;
+7. derived insights + recommendation layer на данных `content -> variant -> publication -> performance`.
