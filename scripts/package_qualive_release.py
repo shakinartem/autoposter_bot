@@ -110,12 +110,16 @@ volumes:
         """
 {$FACTORY_DOMAIN} {
     encode zstd gzip
+    request_body {
+        max_size 12MB
+    }
     header {
         -Server
         X-Content-Type-Options nosniff
         X-Frame-Options DENY
         Referrer-Policy no-referrer
         Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
     }
     reverse_proxy content-factory-web:3000
 }
@@ -147,8 +151,10 @@ volumes:
         -Server
         X-Content-Type-Options nosniff
         X-Frame-Options DENY
-        Referrer-Policy no-referrer
+        Referrer-Policy strict-origin-when-cross-origin
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
         Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob: https:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
     }
     @api_public {
         path /health /ready /auth/telegram/callback /api/v1/oauth/*/callback
@@ -301,7 +307,7 @@ Autoposter also requires a valid Fernet key ring in `AUTOPOSTER_CREDENTIAL_KEYS`
 ./deploy/status.sh
 ```
 
-The script uses one shared Caddy on host ports 80/443. The Caddy services inside each application are disabled by the release overrides, preventing port collisions.
+The script uses one shared Caddy on host ports 80/443. The Caddy services inside each application are disabled by the release overrides, preventing port collisions. The shared edge preserves the security headers and request-size limits from the standalone application edges.
 
 ## Acceptance after DNS/credentials exist
 
