@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -13,6 +13,12 @@ from autoposter_bot.infrastructure.postgres_store import PostgresContentStore
 
 POSTGRES_URL = os.getenv("AUTOPOSTER_TEST_POSTGRES_URL")
 pytestmark = pytest.mark.skipif(not POSTGRES_URL, reason="PostgreSQL integration URL is not configured")
+
+
+def _as_naive_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 def test_postgres_workspace_content_atomic_queue_and_retry_schedule():
@@ -74,7 +80,9 @@ def test_postgres_workspace_content_atomic_queue_and_retry_schedule():
                 (publication.id,),
             ).fetchone()
         assert retry_row is not None
-        assert retry_row["next_attempt_at"] == retry_at
+        # TIMESTAMPTZ is returned timezone-aware by newer psycopg/PostgreSQL versions,
+        # while legacy domain inputs are still naive UTC. Compare the same UTC instant.
+        assert _as_naive_utc(retry_row["next_attempt_at"]) == _as_naive_utc(retry_at)
         assert scoped.get_content(content.id) is not None
         assert scoped.get_account(int(account_id)) is not None
     finally:

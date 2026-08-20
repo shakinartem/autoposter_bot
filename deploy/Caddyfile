@@ -1,5 +1,8 @@
 {$AUTOPOSTER_DOMAIN} {
     encode zstd gzip
+    request_body {
+        max_size 520MB
+    }
 
     @api_public {
         path /health
@@ -20,5 +23,7 @@
         X-Frame-Options DENY
         Referrer-Policy strict-origin-when-cross-origin
         Permissions-Policy "camera=(), microphone=(), geolocation=()"
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob: https:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
     }
 }

@@ -67,7 +67,8 @@ def build_public_login_router(
             )
             return _web_redirect("/auth/complete", grant=grant)
         except Exception as exc:
-            return _web_redirect("/login", login="error", detail=str(exc)[:300])
+            detail = "Telegram authentication failed" if os.getenv("AUTOPOSTER_ENV", "").strip().lower() in {"prod", "production"} else str(exc)[:300]
+            return _web_redirect("/login", login="error", detail=detail)
 
     @router.post("/login-grant/exchange")
     def exchange_login_grant(payload: LoginGrantExchange) -> dict[str, Any]:

@@ -16,126 +16,146 @@ services:
     networks: [backend]
 
   api:
-    build:
-      context: ..
-      dockerfile: Dockerfile
+    build: {context: .., dockerfile: Dockerfile}
     restart: unless-stopped
-    env_file: ../.env
+    env_file:
+      - path: ../.env
+        required: false
     environment:
+      AUTOPOSTER_ENV: production
       AUTOPOSTER_DATABASE_URL: postgresql://${POSTGRES_USER:-autoposter}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-autoposter}
       AUTOPOSTER_WEB_URL: https://${AUTOPOSTER_DOMAIN:?AUTOPOSTER_DOMAIN is required}
+      AUTOPOSTER_WEB_AUTH_MODE: session
       AUTOPOSTER_CORS_ORIGINS: https://${AUTOPOSTER_DOMAIN}
-    depends_on:
-      postgres:
-        condition: service_healthy
-    volumes:
-      - app_data:/app/data
+      AUTOPOSTER_ALLOWED_HOSTS: ${AUTOPOSTER_DOMAIN},autoposter-api,api,localhost,127.0.0.1
+      CONTENT_FACTORY_MEDIA_REQUIRE_ALLOWLIST: "true"
+      CONTENT_FACTORY_MEDIA_ALLOWED_HOSTS: ${CONTENT_FACTORY_MEDIA_ALLOWED_HOSTS:?Set CONTENT_FACTORY_MEDIA_ALLOWED_HOSTS}
+      CONTENT_FACTORY_MEDIA_ALLOW_PRIVATE_HOSTS: "false"
+    depends_on: {postgres: {condition: service_healthy}}
+    volumes: ["app_data:/app/data"]
     expose: ["8000"]
+    read_only: true
+    tmpfs: ["/tmp:size=64m"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=3).read()"]
       interval: 10s
       timeout: 5s
       retries: 12
-    networks: [backend]
+      start_period: 10s
+    networks:
+      backend: {}
+      qualive-backbone: {aliases: [autoposter-api]}
 
   publication-worker:
-    build:
-      context: ..
-      dockerfile: Dockerfile
+    build: {context: .., dockerfile: Dockerfile}
     restart: unless-stopped
     command: ["autoposter-worker"]
-    env_file: ../.env
+    env_file:
+      - path: ../.env
+        required: false
     environment:
+      AUTOPOSTER_ENV: production
       AUTOPOSTER_DATABASE_URL: postgresql://${POSTGRES_USER:-autoposter}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-autoposter}
       AUTOPOSTER_WEB_URL: https://${AUTOPOSTER_DOMAIN}
-    depends_on:
-      postgres:
-        condition: service_healthy
-    volumes:
-      - app_data:/app/data
+    depends_on: {postgres: {condition: service_healthy}}
+    volumes: ["app_data:/app/data"]
+    read_only: true
+    tmpfs: ["/tmp:size=64m"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     networks: [backend]
 
   analytics-worker:
-    build:
-      context: ..
-      dockerfile: Dockerfile
+    build: {context: .., dockerfile: Dockerfile}
     restart: unless-stopped
     command: ["python", "-m", "autoposter_bot.apps.analytics_worker.runner"]
-    env_file: ../.env
+    env_file:
+      - path: ../.env
+        required: false
     environment:
+      AUTOPOSTER_ENV: production
       AUTOPOSTER_DATABASE_URL: postgresql://${POSTGRES_USER:-autoposter}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-autoposter}
       AUTOPOSTER_WEB_URL: https://${AUTOPOSTER_DOMAIN}
-    depends_on:
-      postgres:
-        condition: service_healthy
-    volumes:
-      - app_data:/app/data
-    networks: [backend]
+    depends_on: {postgres: {condition: service_healthy}}
+    volumes: ["app_data:/app/data"]
+    read_only: true
+    tmpfs: ["/tmp:size=64m"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    networks: [backend, qualive-backbone]
 
   reconciliation-worker:
-    build:
-      context: ..
-      dockerfile: Dockerfile
+    build: {context: .., dockerfile: Dockerfile}
     restart: unless-stopped
     command: ["autoposter-reconciler"]
-    env_file: ../.env
+    env_file:
+      - path: ../.env
+        required: false
     environment:
+      AUTOPOSTER_ENV: production
       AUTOPOSTER_DATABASE_URL: postgresql://${POSTGRES_USER:-autoposter}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-autoposter}
       AUTOPOSTER_WEB_URL: https://${AUTOPOSTER_DOMAIN}
-    depends_on:
-      postgres:
-        condition: service_healthy
-    volumes:
-      - app_data:/app/data
+    depends_on: {postgres: {condition: service_healthy}}
+    volumes: ["app_data:/app/data"]
+    read_only: true
+    tmpfs: ["/tmp:size=64m"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     networks: [backend]
 
   health-worker:
-    build:
-      context: ..
-      dockerfile: Dockerfile
+    build: {context: .., dockerfile: Dockerfile}
     restart: unless-stopped
     command: ["autoposter-health"]
-    env_file: ../.env
+    env_file:
+      - path: ../.env
+        required: false
     environment:
+      AUTOPOSTER_ENV: production
       AUTOPOSTER_DATABASE_URL: postgresql://${POSTGRES_USER:-autoposter}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-autoposter}
       AUTOPOSTER_WEB_URL: https://${AUTOPOSTER_DOMAIN}
-    depends_on:
-      postgres:
-        condition: service_healthy
-    volumes:
-      - app_data:/app/data
+    depends_on: {postgres: {condition: service_healthy}}
+    volumes: ["app_data:/app/data"]
+    read_only: true
+    tmpfs: ["/tmp:size=64m"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     networks: [backend]
 
   account-health-worker:
-    build:
-      context: ..
-      dockerfile: Dockerfile
+    build: {context: .., dockerfile: Dockerfile}
     restart: unless-stopped
     command: ["autoposter-account-health"]
-    env_file: ../.env
+    env_file:
+      - path: ../.env
+        required: false
     environment:
+      AUTOPOSTER_ENV: production
       AUTOPOSTER_DATABASE_URL: postgresql://${POSTGRES_USER:-autoposter}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-autoposter}
       AUTOPOSTER_WEB_URL: https://${AUTOPOSTER_DOMAIN}
-    depends_on:
-      postgres:
-        condition: service_healthy
-    volumes:
-      - app_data:/app/data
+    depends_on: {postgres: {condition: service_healthy}}
+    volumes: ["app_data:/app/data"]
+    read_only: true
+    tmpfs: ["/tmp:size=64m"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     networks: [backend]
 
   web:
-    build:
-      context: ../web
-      dockerfile: Dockerfile
+    build: {context: ../web, dockerfile: Dockerfile}
     restart: unless-stopped
     environment:
       AUTOPOSTER_API_URL: http://api:8000
       AUTOPOSTER_WEB_AUTH_MODE: session
       NODE_ENV: production
-    depends_on:
-      api:
-        condition: service_healthy
+    depends_on: {api: {condition: service_healthy}}
     expose: ["3000"]
+    read_only: true
+    tmpfs: ["/tmp:size=64m"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/login"]
       interval: 10s
@@ -148,27 +168,24 @@ services:
     restart: unless-stopped
     environment:
       AUTOPOSTER_DOMAIN: ${AUTOPOSTER_DOMAIN:?AUTOPOSTER_DOMAIN is required}
-    ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
+    ports: ["80:80", "443:443", "443:443/udp"]
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
-      web:
-        condition: service_healthy
-      api:
-        condition: service_healthy
+      web: {condition: service_healthy}
+      api: {condition: service_healthy}
     networks: [backend]
 
 volumes:
-  postgres_data:
-  app_data:
-  caddy_data:
-  caddy_config:
+  postgres_data: {}
+  app_data: {}
+  caddy_data: {}
+  caddy_config: {}
 
 networks:
-  backend:
-    driver: bridge
+  backend: {driver: bridge}
+  qualive-backbone:
+    external: true
+    name: ${QUALIVE_DOCKER_NETWORK:-qualive-backbone}
