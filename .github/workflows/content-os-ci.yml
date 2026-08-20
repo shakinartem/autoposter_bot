@@ -1,15 +1,22 @@
-name: Content OS CI
+name: Content OS Release CI
 
 on:
   push:
     branches:
       - content-os-foundation
+      - agent/content-factory-bridge-v2
+      - agent/content-factory-bridge-v3
   pull_request:
     branches:
       - product-platform
+      - content-os-foundation
+
+permissions:
+  contents: read
 
 jobs:
   python:
+    name: Python + PostgreSQL tests
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -18,8 +25,7 @@ jobs:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: autoposter_test
-        ports:
-          - 5432:5432
+        ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U postgres -d autoposter_test"
           --health-interval 5s
@@ -33,42 +39,21 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - name: Install Python dependencies
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
-      - name: Compile Python package
-        run: python -m compileall autoposter_bot
-      - name: Run tests
-        shell: bash
+      - name: Compile all Python
+        run: python -m compileall -q autoposter_bot scripts tests
+      - name: Import bridge composition
         run: |
-          set +e
-          pytest -vv -x --tb=long > /tmp/pytest.log 2>&1
-          status=$?
-          cat /tmp/pytest.log
-          if [ $status -ne 0 ]; then
-            python - <<'PY'
-          from pathlib import Path
-          text = Path('/tmp/pytest.log').read_text(errors='replace')
-          markers = [text.rfind('\n=================================== FAILURES ==================================='), text.rfind('\n==================================== ERRORS ====================================')]
-          start = max(markers)
-          if start < 0:
-              start = max(0, len(text) - 12000)
-          failure = text[start:]
-          lines = failure.splitlines()[-120:]
-          chunks = []
-          for i in range(0, len(lines), 12):
-              chunk = '\n'.join(lines[i:i+12])
-              if chunk.strip():
-                  chunks.append(chunk)
-          for chunk in chunks[-10:]:
-              safe = chunk.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
-              print(f'::error title=pytest failure::{safe}')
-          PY
-            exit $status
-          fi
+          python -c "from autoposter_bot.apps.api.content_factory_contract import ContentPackageV1; print(ContentPackageV1.__name__)"
+          python -c "from autoposter_bot.apps.api.integrated_main import app; print(app.version)"
+      - name: Run full test suite
+        run: pytest -q
 
   web:
+    name: Next.js typecheck + build
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -78,9 +63,258 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
-      - name: Install web dependencies
+      - name: Install dependencies
         run: npm install
       - name: Typecheck
         run: npm run typecheck
-      - name: Build web app
+      - name: Build
         run: npm run build
+
+  deploy:
+    name: Production images + server contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare production-like config
+        run: |
+          cat > .env.ci <<'EOF'
+          QUALIVE_DOCKER_NETWORK=qualive-backbone
+          AUTOPOSTER_ENV=production
+          AUTOPOSTER_DOMAIN=autoposter.example.com
+          POSTGRES_USER=autoposter
+          POSTGRES_PASSWORD=ci-postgres-password-123456789
+          AUTOPOSTER_WEB_URL=https://autoposter.example.com
+          AUTOPOSTER_WEB_AUTH_MODE=session
+          AUTOPOSTER_REQUIRE_API_AUTH=1
+          AUTOPOSTER_ALLOWED_HOSTS=autoposter.example.com,autoposter-api,api,localhost,127.0.0.1
+          AUTOPOSTER_CORS_ORIGINS=https://autoposter.example.com
+          AUTOPOSTER_CREDENTIAL_KEYS=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+          AUTOPOSTER_API_KEYS_JSON={}
+          TELEGRAM_OIDC_CLIENT_ID=ci-telegram-client
+          TELEGRAM_OIDC_CLIENT_SECRET=ci-telegram-secret-123456789
+          TELEGRAM_OIDC_REDIRECT_URI=https://autoposter.example.com/auth/telegram/callback
+          CONTENT_FACTORY_INGEST_TOKEN=ci-ingest-token-aaaaaaaaaaaaaaaaaaaaaaaa
+          CONTENT_FACTORY_PERFORMANCE_URL=http://content-factory-api:8000/performance/ingest
+          CONTENT_FACTORY_PERFORMANCE_TOKEN=ci-performance-token-bbbbbbbbbbbbbbbbbbbbbbbb
+          CONTENT_FACTORY_MEDIA_REQUIRE_ALLOWLIST=true
+          CONTENT_FACTORY_MEDIA_ALLOWED_HOSTS=assets.factory.example.com
+          CONTENT_FACTORY_MEDIA_ALLOW_PRIVATE_HOSTS=false
+          EOF
+      - name: Server preflight
+        run: python scripts/server-preflight.py --env .env.ci
+      - name: Validate Compose
+        run: docker compose --env-file .env.ci -f deploy/docker-compose.prod.yml config --quiet
+      - name: Validate Caddy
+        run: |
+          docker run --rm \
+            -e AUTOPOSTER_DOMAIN=autoposter.example.com \
+            -v "$PWD/deploy/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            caddy:2.10-alpine caddy validate --config /etc/caddy/Caddyfile
+      - name: Build Python runtime image
+        run: docker build -t qualive-autoposter-ci .
+      - name: Build Next.js runtime image
+        run: docker build -t qualive-autoposter-web-ci ./web
+
+  bundle:
+    name: Immutable server release
+    needs: [python, web, deploy]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref_name == 'agent/content-factory-bridge-v2' || github.ref_name == 'agent/content-factory-bridge-v3')
+    steps:
+      - name: Checkout tested Autoposter
+        uses: actions/checkout@v4
+        with:
+          path: qualive-server-release/autoposter
+          fetch-depth: 1
+      - name: Checkout verified Content Factory
+        uses: actions/checkout@v4
+        with:
+          repository: shakinartem/agency-os
+          ref: c6c05c1ea7e2bdfa01f89c64cbc9ac73c3800489
+          path: qualive-server-release/content-factory
+          fetch-depth: 1
+      - name: Prepare deployment package
+        shell: bash
+        env:
+          AUTOPOSTER_SHA: ${{ github.sha }}
+          FACTORY_SHA: c6c05c1ea7e2bdfa01f89c64cbc9ac73c3800489
+        run: |
+          set -euo pipefail
+          rm -rf qualive-server-release/autoposter/.git qualive-server-release/content-factory/.git
+          mkdir -p qualive-server-release/deploy
+
+          cat > qualive-server-release/deploy/factory.edge.override.yml <<'EOF'
+          services:
+            web:
+              networks:
+                app: {}
+                qualive-edge:
+                  aliases: [content-factory-web]
+            minio:
+              networks:
+                data: {}
+                assets: {}
+                qualive-edge:
+                  aliases: [content-factory-assets]
+            caddy:
+              profiles: [standalone-edge]
+          networks:
+            qualive-edge:
+              external: true
+              name: qualive-edge
+          EOF
+
+          cat > qualive-server-release/deploy/autoposter.edge.override.yml <<'EOF'
+          services:
+            web:
+              networks:
+                backend: {}
+                qualive-edge:
+                  aliases: [autoposter-web]
+            caddy:
+              profiles: [standalone-edge]
+          networks:
+            qualive-edge:
+              external: true
+              name: qualive-edge
+          EOF
+
+          cat > qualive-server-release/deploy/edge-compose.yml <<'EOF'
+          services:
+            edge:
+              image: caddy:2.10-alpine
+              restart: unless-stopped
+              environment:
+                FACTORY_DOMAIN: ${FACTORY_DOMAIN:?Set FACTORY_DOMAIN}
+                FACTORY_ASSETS_DOMAIN: ${FACTORY_ASSETS_DOMAIN:?Set FACTORY_ASSETS_DOMAIN}
+                AUTOPOSTER_DOMAIN: ${AUTOPOSTER_DOMAIN:?Set AUTOPOSTER_DOMAIN}
+              ports: ["80:80", "443:443", "443:443/udp"]
+              volumes:
+                - ./Caddyfile:/etc/caddy/Caddyfile:ro
+                - edge_caddy_data:/data
+                - edge_caddy_config:/config
+              networks: [qualive-edge, qualive-backbone]
+          networks:
+            qualive-edge: {external: true}
+            qualive-backbone: {external: true}
+          volumes:
+            edge_caddy_data: {}
+            edge_caddy_config: {}
+          EOF
+
+          cat > qualive-server-release/deploy/Caddyfile <<'EOF'
+          {$FACTORY_DOMAIN} {
+              encode zstd gzip
+              header { -Server; X-Content-Type-Options nosniff; X-Frame-Options DENY; Referrer-Policy no-referrer; Strict-Transport-Security "max-age=31536000; includeSubDomains" }
+              reverse_proxy content-factory-web:3000
+          }
+          {$FACTORY_ASSETS_DOMAIN} {
+              encode zstd gzip
+              @asset_get { method GET HEAD; path /content-assets/* }
+              handle @asset_get { reverse_proxy content-factory-assets:9000 }
+              respond 404
+          }
+          {$AUTOPOSTER_DOMAIN} {
+              encode zstd gzip
+              request_body { max_size 520MB }
+              @api_public { path /health /ready /auth/telegram/callback /api/v1/oauth/*/callback }
+              handle @api_public { reverse_proxy autoposter-api:8000 }
+              handle { reverse_proxy autoposter-web:3000 }
+              header { -Server; X-Content-Type-Options nosniff; X-Frame-Options DENY; Referrer-Policy no-referrer; Strict-Transport-Security "max-age=31536000; includeSubDomains" }
+          }
+          EOF
+
+          cat > qualive-server-release/deploy/up.sh <<'EOF'
+          #!/usr/bin/env sh
+          set -eu
+          ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+          test -f "$ROOT/content-factory/.env" || { echo "Missing content-factory/.env" >&2; exit 1; }
+          test -f "$ROOT/autoposter/.env" || { echo "Missing autoposter/.env" >&2; exit 1; }
+          docker network inspect qualive-backbone >/dev/null 2>&1 || docker network create qualive-backbone >/dev/null
+          docker network inspect qualive-edge >/dev/null 2>&1 || docker network create qualive-edge >/dev/null
+          (cd "$ROOT/content-factory" && python scripts/server-preflight.py --env .env)
+          (cd "$ROOT/autoposter" && python scripts/server-preflight.py --env .env)
+          docker compose --env-file "$ROOT/content-factory/.env" -f "$ROOT/content-factory/deploy/docker-compose.prod.yml" -f "$ROOT/deploy/factory.edge.override.yml" up -d --build
+          docker compose --env-file "$ROOT/autoposter/.env" -f "$ROOT/autoposter/deploy/docker-compose.prod.yml" -f "$ROOT/deploy/autoposter.edge.override.yml" up -d --build
+          set -a
+          . "$ROOT/content-factory/.env"
+          . "$ROOT/autoposter/.env"
+          set +a
+          docker compose -f "$ROOT/deploy/edge-compose.yml" up -d
+          echo "Qualive server stack started. Check: docker ps"
+          EOF
+          chmod +x qualive-server-release/deploy/up.sh
+
+          cat > qualive-server-release/DEPLOY.md <<'EOF'
+          # Qualive server deployment
+
+          This release contains the hardened Content Factory and Autoposter Content OS 0.12 connected through `content-package/1.1`.
+
+          ## 1. Requirements
+          - Linux server with Docker Engine and Docker Compose v2
+          - DNS A/AAAA records for `FACTORY_DOMAIN`, `FACTORY_ASSETS_DOMAIN`, `AUTOPOSTER_DOMAIN`
+          - TCP 80/443 open to the internet
+
+          ## 2. Configure secrets
+          Copy each example and replace every placeholder/default:
+          ```bash
+          cp content-factory/.env.example content-factory/.env
+          cp autoposter/.env.example autoposter/.env
+          ```
+          Pair secrets exactly:
+          - Factory `AUTOPOSTER_TOKEN` = Autoposter `CONTENT_FACTORY_INGEST_TOKEN`
+          - Factory `PERFORMANCE_INGEST_TOKEN` = Autoposter `CONTENT_FACTORY_PERFORMANCE_TOKEN`
+          - Autoposter `CONTENT_FACTORY_PERFORMANCE_URL=http://content-factory-api:8000/performance/ingest`
+          - Autoposter `CONTENT_FACTORY_MEDIA_ALLOWED_HOSTS=$FACTORY_ASSETS_DOMAIN`
+          - Autoposter `CONTENT_FACTORY_MEDIA_REQUIRE_ALLOWLIST=true`
+          - Keep `CONTENT_FACTORY_MEDIA_ALLOW_PRIVATE_HOSTS=false`
+          - Keep Factory `MODEL_ROUTER_MODE=shadow` for initial production evidence collection.
+
+          Generate long random passwords/tokens and a Fernet key for `AUTOPOSTER_CREDENTIAL_KEYS`.
+
+          ## 3. Deploy
+          ```bash
+          ./deploy/up.sh
+          ```
+          A single shared Caddy owns ports 80/443, so the two applications can run on one server without port conflicts.
+
+          ## 4. Acceptance
+          Check both public sites, `/ready`, then run Factory `scripts/bridge-smoke.py` against Autoposter. Real social publication and provider generation require your real external credentials and cannot be certified by CI alone.
+
+          ## Backup
+          Each application contains `deploy/backup.sh` and `deploy/restore.sh`. Store backups off-server and separately preserve the Autoposter credential encryption key ring.
+          EOF
+
+          python - <<'PY'
+          from pathlib import Path
+          import json, os
+          root=Path('qualive-server-release')
+          manifest={
+              'release_format':'qualive-server-release/1.0',
+              'factory_sha':os.environ['FACTORY_SHA'],
+              'autoposter_sha':os.environ['AUTOPOSTER_SHA'],
+              'content_contract':'content-package/1.1',
+              'factory_migration_head':'0014_audit_events',
+              'autoposter_content_os':'0.12',
+              'ci_run_id':os.environ.get('GITHUB_RUN_ID'),
+              'ci_run_number':os.environ.get('GITHUB_RUN_NUMBER'),
+              'external_e2e':'requires operator provider/social credentials',
+          }
+          (root/'RELEASE_MANIFEST.json').write_text(json.dumps(manifest,indent=2,sort_keys=True)+'\n')
+          PY
+
+          (cd qualive-server-release && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
+          test -s qualive-server-release/SHA256SUMS
+          test -f qualive-server-release/content-factory/packages/database/alembic/versions/0014_audit_events.py
+          test -f qualive-server-release/autoposter/autoposter_bot/application/account_health.py
+          test -f qualive-server-release/autoposter/autoposter_bot/apps/api/content_factory_contract.py
+          test -f qualive-server-release/deploy/up.sh
+      - name: Upload immutable release
+        uses: actions/upload-artifact@v4
+        with:
+          name: qualive-server-release-${{ github.sha }}
+          path: qualive-server-release/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14

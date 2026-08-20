@@ -11,6 +11,12 @@ type RouteContext = {
 
 type StreamingRequestInit = RequestInit & { duplex?: "half" };
 
+function sameOriginForUnsafeRequest(request: NextRequest): boolean {
+  if (["GET", "HEAD", "OPTIONS"].includes(request.method)) return true;
+  const origin = request.headers.get("origin");
+  return origin === request.nextUrl.origin;
+}
+
 function credentialFor(request: NextRequest): string | null {
   if (AUTH_MODE === "session") {
     return request.cookies.get(SESSION_COOKIE)?.value ?? null;
@@ -22,6 +28,9 @@ function credentialFor(request: NextRequest): string | null {
 }
 
 async function proxy(request: NextRequest, context: RouteContext) {
+  if (AUTH_MODE === "session" && !sameOriginForUnsafeRequest(request)) {
+    return NextResponse.json({ detail: "Invalid request origin" }, { status: 403 });
+  }
   const credential = credentialFor(request);
   if (!credential) {
     const status = AUTH_MODE === "session" ? 401 : 503;
@@ -69,10 +78,7 @@ async function proxy(request: NextRequest, context: RouteContext) {
     });
   } catch (error) {
     return NextResponse.json(
-      {
-        detail: "Autoposter backend is unavailable",
-        error: error instanceof Error ? error.message : "unknown error",
-      },
+      { detail: "Autoposter backend is unavailable" },
       { status: 502 },
     );
   }
