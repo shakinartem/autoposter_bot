@@ -1,0 +1,60 @@
+name: Temporary Bridge Hardening Resolver
+
+on:
+  pull_request_target:
+    types: [synchronize, reopened]
+    branches:
+      - content-os-foundation
+
+permissions:
+  contents: write
+
+jobs:
+  resolve:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'agent/content-factory-bridge-v2' &&
+      github.event.pull_request.user.login == 'shakinartem'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact PR head with full history
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - name: Verify provenance and execute reviewed merge script
+        shell: bash
+        env:
+          EXPECTED_HARDENED: 5570ce1b0e7efa609d86c7e6defffc943d47eddb
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+          EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor "$EXPECTED_HARDENED" "$EVENT_HEAD"
+          test "$EVENT_BASE" = "349e24f7764ef588b4eae59edae7ab0451e51f48" || {
+            echo "Base advanced; refusing an unreviewed merge surface: $EVENT_BASE" >&2
+            exit 1
+          }
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          workflow = Path('.github/workflows/content-os-ci.yml').read_text().splitlines()
+          start = next(i for i,line in enumerate(workflow) if line.strip() == 'run: |') + 1
+          body=[]
+          for line in workflow[start:]:
+              if line.startswith('          '):
+                  body.append(line[10:])
+              elif not line.strip():
+                  body.append('')
+              else:
+                  break
+          script='\n'.join(body)+'\n'
+          script=script.replace(
+              'git push origin HEAD:agent/content-factory-bridge-v2',
+              'git push --force-with-lease=refs/heads/agent/content-factory-bridge-v2:'+os.environ['EVENT_HEAD']+' origin HEAD:agent/content-factory-bridge-v2',
+          )
+          if 'force-with-lease' not in script:
+              raise SystemExit('Could not harden push command')
+          Path('/tmp/merge-reviewed.sh').write_text(script)
+          PY
+          bash -euxo pipefail /tmp/merge-reviewed.sh
